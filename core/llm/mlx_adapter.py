@@ -1,4 +1,4 @@
-"""Qwen MLX adapter for local on-device inference using Apple MLX."""
+"""Qwen MLX adapter for local on-device inference using Apple MLX with concurrency & parsing safeguards."""
 
 import asyncio
 import gc
@@ -7,7 +7,7 @@ import re
 from typing import Any
 from uuid import uuid4
 
-from core.agent.exceptions import LLMError
+from core.agent.exceptions import LLMError, ToolCallParseError
 from core.config.settings import Settings, get_settings
 from core.llm.base import LLMAdapter
 from core.llm.schemas import (
@@ -29,21 +29,31 @@ class QwenMLXAdapter(LLMAdapter):
     def __init__(
         self,
         model_id: str | None = None,
-        profile: InferenceProfile = InferenceProfile.FAST,
+        profile: InferenceProfile | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._model_id = model_id or self._settings.model_id
-        self._profile = profile
+        if profile is not None:
+            self._profile = profile
+        else:
+            self._profile = InferenceProfile(self._settings.inference_profile)
+
         self._model: Any = None
         self._tokenizer: Any = None
         self._is_loaded = False
         self._lock = asyncio.Lock()
+        self._inference_lock = asyncio.Lock()
 
     @property
     def is_loaded(self) -> bool:
         """Return True if model and tokenizer are resident in memory."""
         return self._is_loaded
+
+    @property
+    def profile(self) -> InferenceProfile:
+        """Return the active inference profile."""
+        return self._profile
 
     async def load(self) -> None:
         """Load model weights and tokenizer into unified memory."""
@@ -51,7 +61,7 @@ class QwenMLXAdapter(LLMAdapter):
             if self._is_loaded:
                 return
 
-            logger.info("loading_mlx_model", model_id=self._model_id)
+            logger.info("loading_mlx_model", model_id=self._model_id, profile=self._profile.value)
             try:
                 import mlx_lm
 
@@ -96,10 +106,33 @@ class QwenMLXAdapter(LLMAdapter):
     ) -> list[dict[str, Any]]:
         formatted = []
         for msg in messages:
-            formatted.append({
+            entry: dict[str, Any] = {
                 "role": msg.role.value,
-                "content": msg.content,
-            })
+                "content": msg.content or "",
+            }
+            # Record assistant tool calls in conversation history
+            if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                            if isinstance(tc.arguments, dict)
+                            else str(tc.arguments),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            # Record tool result reference in conversation history
+            elif msg.role == MessageRole.TOOL:
+                if msg.tool_call_id:
+                    entry["tool_call_id"] = msg.tool_call_id
+                if msg.tool_name:
+                    entry["name"] = msg.tool_name
+
+            formatted.append(entry)
         return formatted
 
     def _format_tools_for_qwen(self, tools: list[ToolDefinition]) -> list[dict[str, Any]]:
@@ -118,12 +151,25 @@ class QwenMLXAdapter(LLMAdapter):
     def _parse_tool_calls(self, text: str) -> tuple[str, list[ToolCall]]:
         """Parse XML or JSON tool calls from generated text.
         
+        Strictly raises ToolCallParseError if tool syntax is detected but corrupted.
+        
         Returns:
             Tuple of (remaining clean content, list of ToolCall objects)
+            
+        Raises:
+            ToolCallParseError: If model output has broken tool call syntax.
         """
+        # Check for unclosed <tool_call> tags
+        has_open_tag = "<tool_call>" in text
+        has_close_tag = "</tool_call>" in text
+        if has_open_tag and not has_close_tag:
+            raise ToolCallParseError("Unclosed <tool_call> tag detected in model generation.")
+        if has_close_tag and not has_open_tag:
+            raise ToolCallParseError("Orphaned </tool_call> closing tag detected in model generation.")
+
         tool_calls: list[ToolCall] = []
 
-        # 1. Check for XML format: <tool_call><function=name>...</function></tool_call>
+        # 1. XML format: <tool_call><function=name>...</function></tool_call>
         xml_matches = list(re.finditer(
             r"<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>",
             text,
@@ -133,16 +179,25 @@ class QwenMLXAdapter(LLMAdapter):
         if xml_matches:
             for match in xml_matches:
                 func_name = match.group(1).strip()
+                if not func_name:
+                    raise ToolCallParseError("Tool call specified empty function name.")
                 body = match.group(2)
                 args = {}
-                for p_match in re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", body, re.DOTALL):
+                param_matches = list(re.finditer(r"<parameter=([^>]+)>(.*?)</parameter>", body, re.DOTALL))
+                for p_match in param_matches:
                     p_name = p_match.group(1).strip()
                     p_val_raw = p_match.group(2).strip()
-                    try:
-                        p_val = json.loads(p_val_raw)
-                    except Exception:
-                        p_val = p_val_raw
-                    args[p_name] = p_val
+                    # If value looks like JSON, attempt parsing; if corrupted, raise ToolCallParseError
+                    if p_val_raw.startswith(("{", "[")):
+                        try:
+                            args[p_name] = json.loads(p_val_raw)
+                        except json.JSONDecodeError as exc:
+                            raise ToolCallParseError(f"Corrupted JSON in parameter '{p_name}': {exc}") from exc
+                    else:
+                        try:
+                            args[p_name] = json.loads(p_val_raw)
+                        except Exception:
+                            args[p_name] = p_val_raw
 
                 call_id = f"call_{uuid4().hex[:8]}"
                 tool_calls.append(ToolCall(id=call_id, name=func_name, arguments=args))
@@ -153,62 +208,69 @@ class QwenMLXAdapter(LLMAdapter):
                 text,
                 flags=re.DOTALL,
             ).strip()
-            return clean_text, tool_calls
+            # Enforce max 1 tool call per step
+            return clean_text, tool_calls[:1]
 
-        # 2. Check for JSON inside <tool_call>...</tool_call>
-        json_in_tool = list(re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL))
-        if json_in_tool:
-            for match in json_in_tool:
+        # 2. JSON format inside <tool_call>...</tool_call>
+        raw_tool_blocks = list(re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL))
+        if raw_tool_blocks:
+            for match in raw_tool_blocks:
+                raw_inner = match.group(1).strip()
                 try:
-                    data = json.loads(match.group(1))
-                    name = data.get("name") or data.get("function")
-                    args = data.get("arguments", {})
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            pass
-                    if name:
-                        call_id = f"call_{uuid4().hex[:8]}"
-                        tool_calls.append(ToolCall(id=call_id, name=name, arguments=args))
-                except Exception:
-                    pass
+                    data = json.loads(raw_inner)
+                except json.JSONDecodeError as exc:
+                    raise ToolCallParseError(f"Malformed JSON within <tool_call>: {exc}") from exc
 
-            clean_text = re.sub(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", "", text, flags=re.DOTALL).strip()
-            return clean_text, tool_calls
+                if not isinstance(data, dict):
+                    raise ToolCallParseError("Tool call JSON must be a dictionary object.")
 
-        # 3. Check for standalone json code blocks with tool invocation structure
-        code_blocks = list(re.finditer(r"```(?:json)?\s*(\{\s*\"(?:name|tool|function)\"\s*:.*?\})\s*```", text, re.DOTALL))
-        if code_blocks:
-            for match in code_blocks:
+                name = data.get("name") or data.get("function")
+                if not name:
+                    raise ToolCallParseError("Tool call JSON is missing 'name' or 'function' property.")
+
+                args = data.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError as exc:
+                        raise ToolCallParseError(f"Malformed 'arguments' string in tool call: {exc}") from exc
+
+                call_id = f"call_{uuid4().hex[:8]}"
+                tool_calls.append(ToolCall(id=call_id, name=name, arguments=args))
+
+            clean_text = re.sub(r"<tool_call>\s*.*?\s*</tool_call>", "", text, flags=re.DOTALL).strip()
+            return clean_text, tool_calls[:1]
+
+        # 3. Code blocks with explicit tool definitions
+        code_blocks = list(re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL))
+        for match in code_blocks:
+            raw_block = match.group(1).strip()
+            if any(k in raw_block for k in ('"name"', '"tool"', '"function"')) and any(k in raw_block for k in ('"arguments"', '"parameters"')):
                 try:
-                    data = json.loads(match.group(1))
+                    data = json.loads(raw_block)
                     name = data.get("name") or data.get("tool") or data.get("function")
                     args = data.get("arguments") or data.get("parameters") or {}
                     if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            pass
+                        args = json.loads(args)
                     if name:
                         call_id = f"call_{uuid4().hex[:8]}"
                         tool_calls.append(ToolCall(id=call_id, name=name, arguments=args))
-                except Exception:
-                    pass
+                except json.JSONDecodeError as exc:
+                    raise ToolCallParseError(f"Corrupted JSON in tool block: {exc}") from exc
 
-            if tool_calls:
-                clean_text = re.sub(
-                    r"```(?:json)?\s*(\{\s*\"(?:name|tool|function)\"\s*:.*?\})\s*```",
-                    "",
-                    text,
-                    flags=re.DOTALL,
-                ).strip()
-                return clean_text, tool_calls
+        if tool_calls:
+            clean_text = re.sub(
+                r"```(?:json)?\s*\{.*?\}\s*```",
+                "",
+                text,
+                flags=re.DOTALL,
+            ).strip()
+            return clean_text, tool_calls[:1]
 
         return text.strip(), []
 
     async def generate(self, messages: list[ChatMessage]) -> LLMResponse:
-        """Generate direct text response."""
+        """Generate direct text response with concurrency serialization and active profile."""
         if not self._is_loaded:
             await self.load()
 
@@ -217,6 +279,12 @@ class QwenMLXAdapter(LLMAdapter):
 
         def _run_inference() -> str:
             import mlx_lm
+            import mlx_lm.sample_utils
+
+            sampler = mlx_lm.sample_utils.make_sampler(
+                temp=profile.temperature,
+                top_p=profile.top_p,
+            )
             prompt = self._tokenizer.apply_chat_template(
                 formatted_messages,
                 add_generation_prompt=True,
@@ -227,11 +295,13 @@ class QwenMLXAdapter(LLMAdapter):
                 self._tokenizer,
                 prompt=prompt,
                 max_tokens=profile.max_tokens,
+                sampler=sampler,
                 verbose=False,
             )
 
         try:
-            raw_text = await asyncio.to_thread(_run_inference)
+            async with self._inference_lock:
+                raw_text = await asyncio.to_thread(_run_inference)
             return LLMResponse(
                 content=raw_text.strip(),
                 tool_calls=[],
@@ -247,7 +317,7 @@ class QwenMLXAdapter(LLMAdapter):
         messages: list[ChatMessage],
         tools: list[ToolDefinition],
     ) -> LLMResponse:
-        """Generate response with tools in system prompt and chat template."""
+        """Generate response with tools, concurrency guard, and active profile."""
         if not self._is_loaded:
             await self.load()
 
@@ -257,6 +327,12 @@ class QwenMLXAdapter(LLMAdapter):
 
         def _run_tool_inference() -> str:
             import mlx_lm
+            import mlx_lm.sample_utils
+
+            sampler = mlx_lm.sample_utils.make_sampler(
+                temp=profile.temperature,
+                top_p=profile.top_p,
+            )
             try:
                 prompt = self._tokenizer.apply_chat_template(
                     formatted_messages,
@@ -283,11 +359,13 @@ class QwenMLXAdapter(LLMAdapter):
                 self._tokenizer,
                 prompt=prompt,
                 max_tokens=profile.max_tokens,
+                sampler=sampler,
                 verbose=False,
             )
 
         try:
-            raw_text = await asyncio.to_thread(_run_tool_inference)
+            async with self._inference_lock:
+                raw_text = await asyncio.to_thread(_run_tool_inference)
             clean_content, tool_calls = self._parse_tool_calls(raw_text)
 
             return LLMResponse(
@@ -296,6 +374,9 @@ class QwenMLXAdapter(LLMAdapter):
                 finish_reason="tool_calls" if tool_calls else "stop",
                 model=self._model_id,
             )
+        except ToolCallParseError:
+            # Let ToolCallParseError propagate to runtime for retry/repair
+            raise
         except Exception as exc:
             logger.error("mlx_tool_generation_failed", error=str(exc))
             raise LLMError(f"Tool generation error: {exc}") from exc

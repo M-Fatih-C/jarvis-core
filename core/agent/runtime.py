@@ -13,6 +13,7 @@ from core.agent.exceptions import (
     ApprovalRequiredError,
     JarvisError,
     PolicyDeniedError,
+    ToolCallParseError,
 )
 from core.agent.state_machine import AgentState, AgentStateMachine
 from core.config.settings import Settings, get_settings
@@ -70,6 +71,7 @@ class AgentRuntime:
         user_input: str,
         source: str = "chat",
         agent_mode: AgentMode | None = None,
+        anchor_datetime: datetime | None = None,
     ) -> AgentRun:
         """Main entry point to initiate and execute an agent run.
         
@@ -77,6 +79,7 @@ class AgentRuntime:
             user_input: Message or request from user.
             source: Channel source (e.g. 'chat').
             agent_mode: Override agent operating mode (defaulting to config).
+            anchor_datetime: Optional explicit datetime anchor for testing.
             
         Returns:
             The resulting AgentRun in COMPLETED, WAITING_APPROVAL, or FAILED state.
@@ -109,9 +112,13 @@ class AgentRuntime:
         )
 
         try:
-            # 1. CONTEXT_BUILDING
+            # 1. CONTEXT_BUILDING with temporal anchors
             self._transition(run_id, AgentState.CONTEXT_BUILDING)
-            messages = self._context_builder.prepare_initial_messages(user_input, mode)
+            messages = self._context_builder.prepare_initial_messages(
+                user_input,
+                mode,
+                anchor_datetime=anchor_datetime,
+            )
             self._contexts[run_id] = messages
 
             # 2. Start cognitive loop
@@ -126,6 +133,7 @@ class AgentRuntime:
         """Execute iterative cognitive steps up to configured limits."""
         agent_run = self._runs[run_id]
         messages = self._contexts[run_id]
+        parse_retries = 0
 
         while agent_run.step_count < self._settings.max_agent_steps:
             agent_run.step_count += 1
@@ -135,12 +143,45 @@ class AgentRuntime:
             self._transition(run_id, AgentState.THINKING)
 
             tool_defs = self._tools.list_definitions()
-            llm_response = await self._llm.generate_with_tools(messages, tool_defs)
+
+            # Generate with LLM, supporting parse error repair loop up to max_retries
+            while True:
+                try:
+                    llm_response = await self._llm.generate_with_tools(messages, tool_defs)
+                    break
+                except ToolCallParseError as parse_err:
+                    parse_retries += 1
+                    if parse_retries > self._settings.max_retries:
+                        logger.error(
+                            "tool_call_parse_failed_max_retries",
+                            run_id=str(run_id),
+                            retries=parse_retries,
+                            error=str(parse_err),
+                        )
+                        raise parse_err
+                    logger.warning(
+                        "tool_call_parse_failed_retrying",
+                        run_id=str(run_id),
+                        retries=parse_retries,
+                        error=str(parse_err),
+                    )
+                    messages.append(ChatMessage(
+                        role=MessageRole.USER,
+                        content=(
+                            f"System notice: Your tool call could not be parsed: {str(parse_err)}. "
+                            "Please re-issue your tool call formatted strictly with required properties."
+                        ),
+                    ))
 
             # If no tools called, we proceed to final response
             if not llm_response.tool_calls:
                 self._transition(run_id, AgentState.RESPONDING)
                 agent_run.final_response = llm_response.content or ""
+                # Append final assistant message to conversation history
+                messages.append(ChatMessage(
+                    role=MessageRole.ASSISTANT,
+                    content=agent_run.final_response,
+                ))
                 self._transition(run_id, AgentState.COMPLETED)
                 logger.info(
                     "agent_run_completed_no_tools",
@@ -149,9 +190,17 @@ class AgentRuntime:
                 )
                 return agent_run
 
-            # Process proposed tools
+            # Process proposed tool
             self._transition(run_id, AgentState.TOOL_PROPOSED)
-            tool_call = llm_response.tool_calls[0]  # Process primary proposed tool call
+            # Enforce max 1 tool per step
+            tool_call = llm_response.tool_calls[0]
+
+            # Append assistant message with proposed tool_calls to conversation history
+            messages.append(ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=llm_response.content or "",
+                tool_calls=[tool_call],
+            ))
 
             # Check tool call limit
             if agent_run.tool_call_count >= self._settings.max_tool_calls:
@@ -181,8 +230,9 @@ class AgentRuntime:
                     role=MessageRole.TOOL,
                     content=f"Error: Policy Engine denied action '{tool_call.name}': {decision.reason}",
                     tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
                 ))
-                # Proceed to think and respond with explanation
+                # Continue loop to allow LLM to formulate explanation
                 continue
 
             elif decision.decision == PolicyDecisionType.REQUIRE_APPROVAL:
@@ -195,7 +245,7 @@ class AgentRuntime:
                 )
                 agent_run.pending_approval_id = approval_req.id
                 agent_run.pending_tool_call = tool_call
-                # Construct clear informative response message asking for approval
+
                 if llm_response.content:
                     agent_run.final_response = llm_response.content
                 else:
@@ -232,15 +282,16 @@ class AgentRuntime:
                     role=MessageRole.TOOL,
                     content=result_content,
                     tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
                 ))
-                # Next iteration will send tool result back to LLM for final formulation
+                # Continue iterative loop with tool result in context
 
         raise AgentStepLimitError(
             f"Exceeded maximum reasoning steps ({self._settings.max_agent_steps})."
         )
 
     async def resume_approval(self, approval_id: UUID) -> AgentRun:
-        """Resume an AgentRun paused in WAITING_APPROVAL following approval."""
+        """Resume an AgentRun paused in WAITING_APPROVAL, continuing the cognitive loop."""
         approval_req = self._approvals.approve(approval_id)
         run_id = approval_req.agent_run_id
         agent_run = self._runs[run_id]
@@ -277,20 +328,11 @@ class AgentRuntime:
             role=MessageRole.TOOL,
             content=result_content,
             tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
         ))
 
-        # Transition PROCESSING_TOOL_RESULT -> THINKING
-        self._transition(run_id, AgentState.THINKING)
-        tool_defs = self._tools.list_definitions()
-        llm_response = await self._llm.generate_with_tools(messages, tool_defs)
-
-        # Transition THINKING -> RESPONDING -> COMPLETED
-        self._transition(run_id, AgentState.RESPONDING)
-        agent_run.final_response = llm_response.content or "İşlem onaylandı ve tamamlandı."
-        self._transition(run_id, AgentState.COMPLETED)
-
-        logger.info("agent_run_completed_after_approval", run_id=str(run_id))
-        return agent_run
+        # Re-enter the multi-step cognitive loop seamlessly
+        return await self._step_loop(run_id)
 
     async def resume_rejection(self, approval_id: UUID, reason: str | None = None) -> AgentRun:
         """Handle user rejection of a proposed tool call."""
@@ -303,14 +345,29 @@ class AgentRuntime:
                 f"Agent run is in {agent_run.state.value}, expected {AgentState.WAITING_APPROVAL.value}"
             )
 
+        tool_call = approval_req.tool_call
+        messages = self._contexts[run_id]
+
         agent_run.pending_approval_id = None
         agent_run.pending_tool_call = None
 
         # Transition WAITING_APPROVAL -> PROCESSING_TOOL_RESULT -> RESPONDING -> COMPLETED
         self._transition(run_id, AgentState.PROCESSING_TOOL_RESULT)
-        self._transition(run_id, AgentState.RESPONDING)
         rejection_reason = reason or "İşlem kullanıcı tarafından reddedildi."
+
+        messages.append(ChatMessage(
+            role=MessageRole.TOOL,
+            content=f"Tool '{tool_call.name}' was rejected by user: {rejection_reason}",
+            tool_call_id=tool_call.id,
+            tool_name=tool_call.name,
+        ))
+
+        self._transition(run_id, AgentState.RESPONDING)
         agent_run.final_response = rejection_reason
+        messages.append(ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=rejection_reason,
+        ))
         self._transition(run_id, AgentState.COMPLETED)
 
         logger.info("agent_run_completed_after_rejection", run_id=str(run_id))

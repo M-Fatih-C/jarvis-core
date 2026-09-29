@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from core.models.tools import RiskLevel, ToolDefinition, ToolResult
 from core.tools.base import JarvisTool
 
@@ -12,6 +12,13 @@ class CreateReminderInput(BaseModel):
     title: str = Field(description="Title or task description of the reminder")
     due_at: datetime = Field(description="Date and time when the reminder is due (ISO 8601 format)")
     notes: str | None = Field(default=None, description="Optional extra notes or context")
+
+    @field_validator("due_at")
+    @classmethod
+    def validate_tz(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            raise ValueError("due_at must be timezone-aware (e.g. 2026-09-30T19:00:00+03:00)")
+        return v
 
 
 class CreateReminderMockTool(JarvisTool):

@@ -8,6 +8,7 @@ from core.agent.exceptions import (
     JarvisError,
     LLMError,
     PolicyDeniedError,
+    ToolCallParseError,
     ToolExecutionError,
     ToolNotFoundError,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "JarvisError",
     "LLMError",
     "PolicyDeniedError",
+    "ToolCallParseError",
     "ToolExecutionError",
     "ToolNotFoundError",
 ]

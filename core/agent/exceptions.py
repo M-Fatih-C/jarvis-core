@@ -14,6 +14,11 @@ class LLMError(JarvisError):
     pass
 
 
+class ToolCallParseError(LLMError):
+    """Raised when model generates tool call syntax but parsing arguments or structure fails."""
+    pass
+
+
 class ToolNotFoundError(JarvisError):
     """Raised when a requested tool does not exist in the registry."""
     pass

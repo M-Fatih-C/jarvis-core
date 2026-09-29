@@ -15,6 +15,16 @@ Milestone 1 establishes the core agent runtime foundation:
 - **Local API**: Fast, asynchronous FastAPI interface bound exclusively to `127.0.0.1:8765`.
 - **Zero-Bypass Guarantee**: Prompt injections cannot trick the model into executing unapproved tools.
 
+### 🛡️ Milestone 1.1 — Core Hardening
+- **Strict Tool Conversation Protocol**: Chat history records assistant `tool_calls` prior to tool results (`SYSTEM -> USER -> ASSISTANT(tool_calls) -> TOOL(result) -> ASSISTANT`), perfectly conforming to chat template schemas.
+- **Multi-Step Agent Loop on Approval**: Resuming from approval re-enters the iterative `_step_loop`, allowing arbitrary follow-up tool calls.
+- **Temporal Context Anchors**: System prompts inject dynamic `Current datetime` and user timezone via `zoneinfo`, resolving relative dates ("tomorrow at 19:00").
+- **Single-Flight Tool Lock**: Double-checked per-call locking guarantees concurrent calls with identical IDs execute exactly once.
+- **Inference Concurrency Guard**: MLX model inference on Apple Silicon is serialized via an async mutex.
+- **Fail-Closed Tool Parser**: Corrupted tool call syntax raises `ToolCallParseError` and initiates formatting repair prompts up to `max_retries`.
+- **Timezone-Aware Validation**: All tool datetime arguments enforce timezone awareness.
+- **GitHub Actions CI**: Automated mock test verification on push and PR.
+
 ---
 
 ## 🏗️ Architecture
@@ -49,7 +59,7 @@ User Input ───► POST /v1/chat
          ▼            POST /v1/approvals/...         ▼
     Tool Result                │                COMPLETED
          │                     ▼
-         └────────────► Resume & Complete
+         └────────────► Resume & Re-enter Loop
 ```
 
 For detailed architectural decisions and sequence diagrams, refer to:
@@ -57,6 +67,7 @@ For detailed architectural decisions and sequence diagrams, refer to:
 - [ADR-001: Local-First Execution on Apple Silicon with MLX](docs/adr/ADR-001-local-first.md)
 - [ADR-002: Abstract LLM Adapter Interface](docs/adr/ADR-002-llm-adapter.md)
 - [ADR-003: Non-Bypassable Deterministic Policy Engine](docs/adr/ADR-003-policy-engine.md)
+- [ADR-004: Core Hardening & Reliability Guarantees](docs/adr/ADR-004-core-hardening.md)
 
 ---
 

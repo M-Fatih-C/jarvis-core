@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from core.models.tools import RiskLevel, ToolDefinition, ToolResult
 from core.tools.base import JarvisTool
 
@@ -17,6 +17,13 @@ class CreateEventInput(BaseModel):
     title: str = Field(description="Title of the calendar event")
     start: datetime = Field(description="Event start time (ISO 8601 format)")
     end: datetime = Field(description="Event end time (ISO 8601 format)")
+
+    @field_validator("start", "end")
+    @classmethod
+    def validate_tz(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            raise ValueError("datetime must be timezone-aware (e.g. 2026-10-01T10:00:00+03:00)")
+        return v
 
 
 class ListEventsMockTool(JarvisTool):
