@@ -219,36 +219,52 @@ async def test_4_corrupted_tool_output_triggers_repair_loop(
 
 
 # ============================================================================
-# TEST 5: Concurrency Guard Serializes MLX Inference
+# TEST 5: Concurrency Guard Serializes MLX Inference at Adapter Method Level
 # ============================================================================
 @pytest.mark.asyncio
 async def test_5_concurrency_guard_serializes_inference() -> None:
     """TEST 5:
-    Simultaneous inference calls through the adapter must be serialized via _inference_lock.
+    Requirement 4: Verify concurrency serialization at the adapter method level.
+    Simultaneous calls to adapter.generate() must be serialized through the adapter's
+    internal concurrency guard, preventing concurrent calls to the underlying inference engine.
     """
+    import time
+    from unittest.mock import MagicMock, patch
     from core.llm.mlx_adapter import QwenMLXAdapter
+
     adapter = QwenMLXAdapter()
+    adapter._is_loaded = True
+    adapter._model = MagicMock()
+    mock_tok = MagicMock()
+    mock_tok.apply_chat_template.return_value = "prompt"
+    adapter._tokenizer = mock_tok
 
     active_executions = 0
     max_concurrent_seen = 0
 
-    async def mock_inference_call(delay: float):
+    def fake_mlx_generate(*args, **kwargs):
         nonlocal active_executions, max_concurrent_seen
-        async with adapter._inference_lock:
-            active_executions += 1
-            max_concurrent_seen = max(max_concurrent_seen, active_executions)
-            await asyncio.sleep(delay)
-            active_executions -= 1
+        active_executions += 1
+        max_concurrent_seen = max(max_concurrent_seen, active_executions)
+        time.sleep(0.04)  # Simulate GPU inference latency
+        active_executions -= 1
+        return "Serialized response"
 
-    # Launch 3 simultaneous tasks
-    await asyncio.gather(
-        mock_inference_call(0.05),
-        mock_inference_call(0.05),
-        mock_inference_call(0.05),
-    )
+    # Invoke real adapter.generate() concurrently across 3 tasks
+    mock_mlx_lm = MagicMock()
+    mock_mlx_lm.generate.side_effect = fake_mlx_generate
+    mock_mlx_lm.sample_utils.make_sampler.return_value = MagicMock()
+    with patch.dict("sys.modules", {"mlx_lm": mock_mlx_lm, "mlx_lm.sample_utils": mock_mlx_lm.sample_utils}):
+        results = await asyncio.gather(
+            adapter.generate([ChatMessage(role=MessageRole.USER, content="Query 1")]),
+            adapter.generate([ChatMessage(role=MessageRole.USER, content="Query 2")]),
+            adapter.generate([ChatMessage(role=MessageRole.USER, content="Query 3")]),
+        )
 
-    # Concurrency guard must guarantee max simultaneous executions was strictly 1
+    # Concurrency guard inside adapter.generate() must guarantee serialization
     assert max_concurrent_seen == 1
+    assert len(results) == 3
+    assert all(r.content == "Serialized response" for r in results)
 
 
 # ============================================================================
@@ -299,3 +315,65 @@ async def test_6_single_flight_per_call_idempotency() -> None:
     assert res1.data["count"] == 1
     assert res2.data["count"] == 1
     assert res1 is res2
+
+
+# ============================================================================
+# TEST 7: Parse Retry Counter Scope Resets Per Reasoning Step
+# ============================================================================
+@pytest.mark.asyncio
+async def test_7_parse_retry_counter_resets_per_step(
+    hardened_environment: tuple[AgentRuntime, MockLLMAdapter, ToolRegistry, ToolExecutor],
+) -> None:
+    """TEST 7:
+    Requirement 6: Verify that parse_retries is scoped per reasoning step.
+    If Step 1 uses 1 retry to succeed, Step 2 must start with a fresh retry budget (0)
+    and successfully retry without exceeding max_retries=2.
+    """
+    runtime, _, _, _ = hardened_environment
+
+    step1_attempts = 0
+    step2_attempts = 0
+
+    class MultiStepFlakyAdapter(LLMAdapter):
+        async def load(self): pass
+        async def unload(self): pass
+        async def health(self): return True
+        async def generate(self, messages):
+            return LLMResponse(content="Final completion")
+
+        async def generate_with_tools(self, messages, tools):
+            nonlocal step1_attempts, step2_attempts
+            # Check if this is Step 1 (no tool result yet) or Step 2 (calendar result present)
+            has_calendar_result = any(m.role == MessageRole.TOOL and "online" in m.content for m in messages)
+
+            if not has_calendar_result:
+                step1_attempts += 1
+                if step1_attempts == 1:
+                    # Fail step 1 first time
+                    raise ToolCallParseError("Step 1 syntax error")
+                # Succeed step 1 second time
+                return LLMResponse(
+                    content=None,
+                    tool_calls=[ToolCall(id="call_step1", name="system.get_status", arguments={})],
+                    finish_reason="tool_calls",
+                )
+            else:
+                step2_attempts += 1
+                if step2_attempts == 1:
+                    # Fail step 2 first time
+                    raise ToolCallParseError("Step 2 syntax error")
+                # Succeed step 2 second time
+                return LLMResponse(
+                    content="İki adım da başarıyla tamamlandı.",
+                    tool_calls=[],
+                    finish_reason="stop",
+                )
+
+    runtime._llm = MultiStepFlakyAdapter()
+
+    run = await runtime.run("Mac'in durumunu kontrol et.")
+
+    assert run.state == AgentState.COMPLETED
+    assert step1_attempts == 2  # 1 failure + 1 success
+    assert step2_attempts == 2  # 1 failure + 1 success
+    assert run.final_response == "İki adım da başarıyla tamamlandı."

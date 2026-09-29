@@ -106,11 +106,20 @@ class QwenMLXAdapter(LLMAdapter):
     ) -> list[dict[str, Any]]:
         formatted = []
         for msg in messages:
+            # Handle internal instructions without violating Qwen's single initial system message rule
+            if msg.is_internal:
+                entry = {
+                    "role": "user",
+                    "content": f"[System Internal Instruction]: {msg.content}",
+                }
+                formatted.append(entry)
+                continue
+
             entry: dict[str, Any] = {
                 "role": msg.role.value,
                 "content": msg.content or "",
             }
-            # Record assistant tool calls in conversation history
+            # Record assistant tool calls in conversation history with arguments as mapping/dict
             if msg.role == MessageRole.ASSISTANT and msg.tool_calls:
                 entry["tool_calls"] = [
                     {
@@ -118,9 +127,7 @@ class QwenMLXAdapter(LLMAdapter):
                         "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
-                            if isinstance(tc.arguments, dict)
-                            else str(tc.arguments),
+                            "arguments": tc.arguments,
                         },
                     }
                     for tc in msg.tool_calls
@@ -151,13 +158,14 @@ class QwenMLXAdapter(LLMAdapter):
     def _parse_tool_calls(self, text: str) -> tuple[str, list[ToolCall]]:
         """Parse XML or JSON tool calls from generated text.
         
-        Strictly raises ToolCallParseError if tool syntax is detected but corrupted.
+        Strictly raises ToolCallParseError if tool syntax is detected but corrupted,
+        or if multiple tool calls are produced in a single reasoning step.
         
         Returns:
             Tuple of (remaining clean content, list of ToolCall objects)
             
         Raises:
-            ToolCallParseError: If model output has broken tool call syntax.
+            ToolCallParseError: If model output has broken syntax or multiple tool calls.
         """
         # Check for unclosed <tool_call> tags
         has_open_tag = "<tool_call>" in text
@@ -202,14 +210,18 @@ class QwenMLXAdapter(LLMAdapter):
                 call_id = f"call_{uuid4().hex[:8]}"
                 tool_calls.append(ToolCall(id=call_id, name=func_name, arguments=args))
 
+            if len(tool_calls) > 1:
+                raise ToolCallParseError(
+                    "Jarvis V1 supports exactly one tool call per reasoning step. Please emit only one tool call."
+                )
+
             clean_text = re.sub(
                 r"<tool_call>\s*<function=([^>]+)>(.*?)</function>\s*</tool_call>",
                 "",
                 text,
                 flags=re.DOTALL,
             ).strip()
-            # Enforce max 1 tool call per step
-            return clean_text, tool_calls[:1]
+            return clean_text, tool_calls
 
         # 2. JSON format inside <tool_call>...</tool_call>
         raw_tool_blocks = list(re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL))
@@ -238,8 +250,13 @@ class QwenMLXAdapter(LLMAdapter):
                 call_id = f"call_{uuid4().hex[:8]}"
                 tool_calls.append(ToolCall(id=call_id, name=name, arguments=args))
 
+            if len(tool_calls) > 1:
+                raise ToolCallParseError(
+                    "Jarvis V1 supports exactly one tool call per reasoning step. Please emit only one tool call."
+                )
+
             clean_text = re.sub(r"<tool_call>\s*.*?\s*</tool_call>", "", text, flags=re.DOTALL).strip()
-            return clean_text, tool_calls[:1]
+            return clean_text, tool_calls
 
         # 3. Code blocks with explicit tool definitions
         code_blocks = list(re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL))
@@ -259,13 +276,17 @@ class QwenMLXAdapter(LLMAdapter):
                     raise ToolCallParseError(f"Corrupted JSON in tool block: {exc}") from exc
 
         if tool_calls:
+            if len(tool_calls) > 1:
+                raise ToolCallParseError(
+                    "Jarvis V1 supports exactly one tool call per reasoning step. Please emit only one tool call."
+                )
             clean_text = re.sub(
                 r"```(?:json)?\s*\{.*?\}\s*```",
                 "",
                 text,
                 flags=re.DOTALL,
             ).strip()
-            return clean_text, tool_calls[:1]
+            return clean_text, tool_calls
 
         return text.strip(), []
 

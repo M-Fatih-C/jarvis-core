@@ -133,8 +133,6 @@ class AgentRuntime:
         """Execute iterative cognitive steps up to configured limits."""
         agent_run = self._runs[run_id]
         messages = self._contexts[run_id]
-        parse_retries = 0
-
         while agent_run.step_count < self._settings.max_agent_steps:
             agent_run.step_count += 1
             agent_run.updated_at = datetime.now(timezone.utc)
@@ -143,6 +141,7 @@ class AgentRuntime:
             self._transition(run_id, AgentState.THINKING)
 
             tool_defs = self._tools.list_definitions()
+            step_parse_retries = 0
 
             # Generate with LLM, supporting parse error repair loop up to max_retries
             while True:
@@ -150,19 +149,19 @@ class AgentRuntime:
                     llm_response = await self._llm.generate_with_tools(messages, tool_defs)
                     break
                 except ToolCallParseError as parse_err:
-                    parse_retries += 1
-                    if parse_retries > self._settings.max_retries:
+                    step_parse_retries += 1
+                    if step_parse_retries > self._settings.max_retries:
                         logger.error(
                             "tool_call_parse_failed_max_retries",
                             run_id=str(run_id),
-                            retries=parse_retries,
+                            retries=step_parse_retries,
                             error=str(parse_err),
                         )
                         raise parse_err
                     logger.warning(
                         "tool_call_parse_failed_retrying",
                         run_id=str(run_id),
-                        retries=parse_retries,
+                        retries=step_parse_retries,
                         error=str(parse_err),
                     )
                     messages.append(ChatMessage(
@@ -171,6 +170,7 @@ class AgentRuntime:
                             f"System notice: Your tool call could not be parsed: {str(parse_err)}. "
                             "Please re-issue your tool call formatted strictly with required properties."
                         ),
+                        is_internal=True,
                     ))
 
             # If no tools called, we proceed to final response

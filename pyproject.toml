@@ -33,3 +33,6 @@ build-backend = "hatchling.build"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["core", "api"]

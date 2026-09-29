@@ -22,3 +22,7 @@ class ChatMessage(BaseModel):
     tool_call_id: str | None = Field(default=None, description="Associated tool call ID if role is TOOL")
     tool_name: str | None = Field(default=None, description="Tool name if role is TOOL")
     tool_calls: list[ToolCall] = Field(default_factory=list, description="Tool calls proposed if role is ASSISTANT")
+    is_internal: bool = Field(
+        default=False,
+        description="Flag indicating synthetic internal system instruction, excluded from user conversation history",
+    )
