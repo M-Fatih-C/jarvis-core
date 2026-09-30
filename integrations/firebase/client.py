@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 from core.config.settings import Settings, get_settings
@@ -43,7 +44,12 @@ class FirestoreClientProvider:
             raise FirestoreUnavailableError(f"Could not initialize Firestore client: {exc}") from exc
 
     async def close(self) -> None:
-        """Close client connection."""
+        """Close client connection safely whether synchronous or asynchronous."""
         if self._client is not None:
-            await self._client.close()
+            try:
+                res = self._client.close()
+                if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                    await res
+            except Exception:
+                pass
             self._client = None
