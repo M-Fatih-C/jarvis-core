@@ -89,3 +89,11 @@ class FirestoreDeviceRepository(DeviceRepository):
             return True
         except Exception:
             return False
+
+    async def register(self, device: DeviceRecord) -> DeviceRecord:
+        """Alias for register_or_update."""
+        return await self.register_or_update(device)
+
+    async def update_heartbeat(self, device_id: str, status: DeviceStatus = DeviceStatus.ONLINE) -> bool:
+        """Alias for heartbeat."""
+        return await self.heartbeat(device_id, status)

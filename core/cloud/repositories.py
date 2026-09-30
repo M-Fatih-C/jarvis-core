@@ -42,6 +42,23 @@ class CommandRepository(ABC):
     async def list(self, status: CommandStatus | None = None) -> list[CloudCommand]:
         pass
 
+    async def update_status(
+        self,
+        command_id: str,
+        status: CommandStatus,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> CloudCommand | None:
+        cmd = await self.get(command_id)
+        if cmd is None:
+            return None
+        cmd.status = status
+        if result is not None:
+            cmd.result = result
+        if error is not None:
+            cmd.error = error
+        return await self.update(cmd)
+
 
 class DeviceRepository(ABC):
     """Abstract interface for tracking device fleet and heartbeats."""

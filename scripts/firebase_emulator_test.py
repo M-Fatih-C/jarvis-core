@@ -190,8 +190,8 @@ async def run_emulator_tests(require_emulator: bool = False) -> None:
         last_seen_at=now,
         created_at=now,
     )
-    await dev_repo.register(dev)
-    await dev_repo.update_heartbeat("mac-mini-test")
+    await dev_repo.register_or_update(dev)
+    await dev_repo.heartbeat("mac-mini-test")
     loaded_dev = await dev_repo.get("mac-mini-test")
     assert loaded_dev is not None
     assert loaded_dev.status == DeviceStatus.ONLINE
