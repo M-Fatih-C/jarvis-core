@@ -44,11 +44,6 @@ def register_apple_tools(
         client: Optional MacBridgeClient instance for native execution.
     """
     if provider == "native_macos":
-        if sys.platform != "darwin":
-            logger.warning("native_macos_not_supported_on_platform", platform=sys.platform)
-            register_mock_tools(registry)
-            return
-
         bridge_client = client or MacBridgeClient()
 
         # Calendar tools
