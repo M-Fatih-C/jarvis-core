@@ -1,7 +1,7 @@
-# Milestone 2 Architecture: Memory, Personalization & Cloud Sync
+# Milestone 2 & 2.1 Architecture: Memory, Personalization & Production Verification
 
 ## 1. Overview
-Milestone 2 expands Jarvis Core from a single-session command runner into an adaptive personal intelligence assistant with durable memory, client-side encryption, and cloud synchronization.
+Milestone 2 expands Jarvis Core from a single-session command runner into an adaptive personal intelligence assistant with durable memory, client-side encryption, and cloud synchronization. Milestone 2.1 hardens and verifies all production execution paths.
 
 ```
                       USER
@@ -47,3 +47,23 @@ Memory Retrieval               Qwen3.5 Local
 - **Command Queue State Machine**:
   `QUEUED -> LEASED -> RUNNING -> WAITING_APPROVAL / COMPLETED / FAILED`
 - **Device Telemetry**: Heartbeat loop updates `last_seen_at` and `status` periodically.
+
+## 4. Deterministic Temporal Grounding (ADR-008)
+- Eliminates LLM hallucination of weekdays and calendar mathematics.
+- Single source of truth via Python `datetime` and `zoneinfo` (`core/time/temporal.py`).
+- Automatic pre-grounding in system prompts and fail-closed response sanitization.
+
+## 5. Production-Path Verification Matrix
+
+Every execution path in Jarvis Core is explicitly classified and verified through dedicated suites:
+
+| Execution Path | Verification Level | Verification Mechanism | Status |
+| :--- | :--- | :--- | :---: |
+| **Domain Logic & Invariants** | Unit Verification | Pytest (82 tests across memory, tools, policy, cloud, time) | **VERIFIED** |
+| **Agent State Machine & Protocols** | Mock Integration Verification | `tests/integration/test_milestone_2_acceptance.py` | **VERIFIED** |
+| **Process-Restart Persistence** | Two-Process Persistence Verification | `tests/integration/test_process_persistence.py` (Subprocess A store -> Subprocess B retrieve) | **VERIFIED** |
+| **Firestore Cloud Integration** | Firestore Emulator Strict Acceptance | `scripts/firebase_emulator_test.py --require-emulator` in GitHub CI (`firebase-emulator` job) | **VERIFIED** |
+| **LLM Reasoning & Multi-step Loop** | Real Apple Silicon MLX Verification | `scripts/test_model.py --mlx` with `mlx-community/Qwen3.5-4B-MLX-4bit` | **VERIFIED** |
+| **Semantic Vector Retrieval** | Real Embedding Model Verification | `scripts/memory_demo.py --mlx --real-embeddings` with `intfloat/multilingual-e5-small` | **VERIFIED** |
+| **Key Management & Cryptography** | Real macOS Keychain Verification | `scripts/keychain_acceptance.py` with native Apple Keychain Services (`com.jarvis.acceptance_test`) | **VERIFIED** |
+| **Temporal Grounding & Weekdays** | Deterministic Temporal Verification | `tests/unit/test_temporal.py` and scheduling acceptance assertions | **VERIFIED** |
