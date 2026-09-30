@@ -38,10 +38,17 @@ class InMemoryKeyProvider(KeyProvider):
 class MacKeychainKeyProvider(KeyProvider):
     """macOS Keychain key provider using the native keyring service."""
 
-    SERVICE_NAME = "com.jarvis.memory"
-    USERNAME = "master_key"
+    DEFAULT_SERVICE_NAME = "com.jarvis.memory"
+    DEFAULT_USERNAME = "master_key"
 
-    def __init__(self, fallback_to_memory: bool = False) -> None:
+    def __init__(
+        self,
+        service_name: str | None = None,
+        username: str | None = None,
+        fallback_to_memory: bool = False,
+    ) -> None:
+        self.service_name = service_name or self.DEFAULT_SERVICE_NAME
+        self.username = username or self.DEFAULT_USERNAME
         self._fallback_to_memory = fallback_to_memory
         self._cached_key: bytes | None = None
 
@@ -51,13 +58,13 @@ class MacKeychainKeyProvider(KeyProvider):
 
         try:
             import keyring
-            key_b64 = keyring.get_password(self.SERVICE_NAME, self.USERNAME)
+            key_b64 = keyring.get_password(self.service_name, self.username)
             if key_b64 is None:
                 new_key = os.urandom(32)
                 key_b64 = base64.b64encode(new_key).decode("ascii")
-                keyring.set_password(self.SERVICE_NAME, self.USERNAME, key_b64)
+                keyring.set_password(self.service_name, self.username, key_b64)
                 self._cached_key = new_key
-                logger.info("keychain_key_initialized", service=self.SERVICE_NAME)
+                logger.info("keychain_key_initialized", service=self.service_name)
             else:
                 self._cached_key = base64.b64decode(key_b64.encode("ascii"))
             return self._cached_key
@@ -68,6 +75,16 @@ class MacKeychainKeyProvider(KeyProvider):
                 self._cached_key = os.urandom(32)
                 return self._cached_key
             raise CryptoError(f"Failed to access macOS Keychain: {exc}") from exc
+
+    def delete_key(self) -> bool:
+        """Clean up key from Keychain (useful for isolated acceptance tests)."""
+        try:
+            import keyring
+            keyring.delete_password(self.service_name, self.username)
+            self._cached_key = None
+            return True
+        except Exception:
+            return False
 
 
 class MemoryEncryptor:
