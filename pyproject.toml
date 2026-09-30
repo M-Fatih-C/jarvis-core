@@ -5,14 +5,18 @@ description = "Jarvis V1 — Local-First AI Agent Core for macOS"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cryptography>=43.0.0",
     "fastapi>=0.115.0",
+    "google-cloud-firestore>=2.19.0",
     "httpx>=0.28.0",
+    "keyring>=25.0.0",
     "mlx>=0.22.0; sys_platform == 'darwin'",
     "mlx-lm>=0.21.0; sys_platform == 'darwin'",
     "orjson>=3.10.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
     "rich>=13.9.0",
+    "sentence-transformers>=3.0.0",
     "structlog>=24.4.0",
     "tenacity>=9.0.0",
     "typer>=0.15.0",
@@ -35,4 +39,4 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "api"]
+packages = ["core", "api", "integrations"]

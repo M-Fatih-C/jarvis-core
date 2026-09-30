@@ -35,6 +35,30 @@ class Settings(BaseSettings):
     # Observability
     log_level: str = "INFO"
 
+    # Memory Settings (Milestone 2)
+    memory_enabled: bool = True
+    memory_db_path: str = "~/Library/Application Support/Jarvis/memory.db"
+    embedding_provider: Literal["mock", "sentence_transformers"] = "mock"
+    embedding_model: str = "intfloat/multilingual-e5-small"
+    memory_top_k: int = 8
+    max_memory_context_chars: int = 4000
+    ranking_weight_semantic: float = 0.55
+    ranking_weight_importance: float = 0.20
+    ranking_weight_recency: float = 0.15
+    ranking_weight_confidence: float = 0.10
+
+    # Firebase & Cloud Settings (Milestone 2)
+    firebase_enabled: bool = False
+    firebase_project_id: str = "jarvis-local-dev"
+    jarvis_uid: str = "default_user"
+    firestore_emulator_host: str | None = None
+    device_id: str = "mac-mini-main"
+    device_name: str = "Jarvis Mac"
+    device_type: str = "macos"
+    device_heartbeat_interval_seconds: int = 30
+    command_poll_interval_seconds: int = 5
+    command_lease_duration_seconds: int = 60
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
