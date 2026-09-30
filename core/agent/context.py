@@ -12,7 +12,7 @@ Temporal & Contextual Awareness:
 - Current datetime: {current_datetime}
 - User timezone: {user_timezone}
 - Whenever the user specifies relative dates or times (such as "today", "tomorrow", "tonight", "next Monday", "in 2 hours"), you MUST accurately resolve the date and time against Current datetime and supply valid ISO 8601 format with timezone offset (e.g. 2026-09-30T19:00:00+03:00).
-
+{memory_section}
 Operational Rules:
 - Current mode: {agent_mode}.
 - You may invoke available tools when necessary to fulfill the user's intent.
@@ -48,22 +48,26 @@ class ContextBuilder:
         self,
         agent_mode: AgentMode | None = None,
         anchor_datetime: datetime | None = None,
+        memory_context: str | None = None,
     ) -> ChatMessage:
-        """Construct the standardized system message containing current datetime and mode.
+        """Construct the standardized system message containing current datetime, mode, and memories.
         
         Args:
             agent_mode: Operating mode (defaults to self.default_mode).
             anchor_datetime: Optional explicit datetime for deterministic tests.
+            memory_context: Optional formatted memory context string.
             
         Returns:
             ChatMessage with MessageRole.SYSTEM.
         """
         mode = agent_mode or self.default_mode
         now_dt = anchor_datetime or self.get_current_datetime()
+        mem_sec = f"\nRelevant User Memories & Preferences:\n{memory_context}\n" if memory_context else ""
         content = JARVIS_SYSTEM_PROMPT_TEMPLATE.format(
             current_datetime=now_dt.isoformat(),
             user_timezone=self.timezone_name,
             agent_mode=mode.value.upper(),
+            memory_section=mem_sec,
         )
         return ChatMessage(role=MessageRole.SYSTEM, content=content)
 
@@ -72,17 +76,23 @@ class ContextBuilder:
         user_input: str,
         agent_mode: AgentMode | None = None,
         anchor_datetime: datetime | None = None,
+        memory_context: str | None = None,
     ) -> list[ChatMessage]:
-        """Create the starting message list containing system prompt and user input.
+        """Create the starting message list containing system prompt, memories, and user input.
         
         Args:
             user_input: Raw query from user.
             agent_mode: Operating mode.
             anchor_datetime: Optional explicit datetime for deterministic tests.
+            memory_context: Optional formatted memory context string.
             
         Returns:
             List containing system message and user message.
         """
-        system_msg = self.build_system_message(agent_mode, anchor_datetime=anchor_datetime)
+        system_msg = self.build_system_message(
+            agent_mode,
+            anchor_datetime=anchor_datetime,
+            memory_context=memory_context,
+        )
         user_msg = ChatMessage(role=MessageRole.USER, content=user_input)
         return [system_msg, user_msg]

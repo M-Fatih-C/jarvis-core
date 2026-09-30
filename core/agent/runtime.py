@@ -1,7 +1,10 @@
 """Core Agent Runtime executing the cognitive loop and coordinating components."""
 
+from __future__ import annotations
+
 import json
 from datetime import datetime, timezone
+from typing import Any
 from uuid import UUID, uuid4
 
 from core.agent.approval_store import ApprovalStore
@@ -42,6 +45,7 @@ class AgentRuntime:
         tool_executor: ToolExecutor,
         approval_store: ApprovalStore | None = None,
         context_builder: ContextBuilder | None = None,
+        memory_service: Any = None,
         settings: Settings | None = None,
     ) -> None:
         self._llm = llm_adapter
@@ -50,12 +54,18 @@ class AgentRuntime:
         self._executor = tool_executor
         self._approvals = approval_store or ApprovalStore()
         self._context_builder = context_builder or ContextBuilder()
+        self._memory = memory_service
         self._settings = settings or get_settings()
 
         # In-memory storage for active runs and conversation histories
         self._runs: dict[UUID, AgentRun] = {}
         self._contexts: dict[UUID, list[ChatMessage]] = {}
         self._state_machines: dict[UUID, AgentStateMachine] = {}
+
+    @property
+    def memory_service(self) -> Any:
+        """Accessor for configured memory service."""
+        return self._memory
 
     def get_run(self, run_id: UUID) -> AgentRun | None:
         """Fetch an AgentRun by its ID."""
@@ -112,17 +122,34 @@ class AgentRuntime:
         )
 
         try:
-            # 1. CONTEXT_BUILDING with temporal anchors
+            # 1. CONTEXT_BUILDING with temporal anchors and memory context
             self._transition(run_id, AgentState.CONTEXT_BUILDING)
+            memory_context = None
+            if self._memory is not None:
+                try:
+                    memory_context = await self._memory.retrieve_context_for_query(user_input)
+                except Exception as m_err:
+                    logger.warning("memory_retrieval_failed", error=str(m_err))
+
             messages = self._context_builder.prepare_initial_messages(
                 user_input,
                 mode,
                 anchor_datetime=anchor_datetime,
+                memory_context=memory_context,
             )
             self._contexts[run_id] = messages
 
             # 2. Start cognitive loop
-            return await self._step_loop(run_id)
+            res = await self._step_loop(run_id)
+
+            # 3. Post-run memory extraction if completed
+            if self._memory is not None and res.state == AgentState.COMPLETED:
+                try:
+                    await self._memory.process_conversation_turn(user_input, res.final_response)
+                except Exception as m_err:
+                    logger.warning("memory_extraction_failed", error=str(m_err))
+
+            return res
 
         except Exception as exc:
             logger.error("agent_run_exception", run_id=str(run_id), error=str(exc))
@@ -332,7 +359,16 @@ class AgentRuntime:
         ))
 
         # Re-enter the multi-step cognitive loop seamlessly
-        return await self._step_loop(run_id)
+        completed_run = await self._step_loop(run_id)
+
+        # Post-run memory extraction if completed
+        if self._memory is not None and completed_run.state == AgentState.COMPLETED:
+            try:
+                await self._memory.process_conversation_turn(agent_run.user_input, completed_run.final_response)
+            except Exception as m_err:
+                logger.warning("memory_extraction_failed", error=str(m_err))
+
+        return completed_run
 
     async def resume_rejection(self, approval_id: UUID, reason: str | None = None) -> AgentRun:
         """Handle user rejection of a proposed tool call."""
