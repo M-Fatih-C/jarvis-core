@@ -292,3 +292,32 @@ async def test_scenarios_c1_c2_c3_cloud_command_lifecycle(
     )
     dup_res = await cmd_repo.create(cmd_duplicate)
     assert dup_res.id == "cmd_offline_1"  # Returns original command, does not re-queue
+
+
+# ============================================================================
+# TEMPORAL CONSISTENCY: Weekday / Date Deterministic Grounding Acceptance
+# ============================================================================
+@pytest.mark.asyncio
+async def test_deterministic_temporal_scheduling_consistency(
+    memory_environment: tuple[MemoryService, AgentRuntime, MockLLMAdapter],
+) -> None:
+    _, runtime, llm = memory_environment
+    from zoneinfo import ZoneInfo
+    anchor = datetime(2026, 9, 30, 21, 0, 0, tzinfo=ZoneInfo("Europe/Istanbul"))
+
+    # LLM simulates a model hallucinating "Monday" alongside 2026-10-01
+    llm.queue_response(LLMResponse(
+        content="Based on your preference, I propose scheduling for Tomorrow (Monday, 2026-10-01) from 19:00 to 21:00."
+    ))
+
+    run = await runtime.run(
+        "Yarın Jarvis projesine iki saat ayırmak istiyorum. Uygun bir zaman önerir misin?",
+        anchor_datetime=anchor,
+    )
+    assert run.state == AgentState.COMPLETED
+
+    # The deterministic temporal guard MUST have sanitized the hallucination
+    assert "2026-10-01" in run.final_response
+    assert "Thursday" in run.final_response
+    assert "Monday" not in run.final_response
+    assert "Pazartesi" not in run.final_response

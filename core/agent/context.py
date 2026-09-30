@@ -5,13 +5,20 @@ from zoneinfo import ZoneInfo
 from core.config.settings import get_settings
 from core.models.agent import AgentMode
 from core.models.messages import ChatMessage, MessageRole
+from core.time.temporal import (
+    get_deterministic_temporal_grounding,
+    weekday_for_date,
+)
 
 JARVIS_SYSTEM_PROMPT_TEMPLATE = """You are Jarvis, an intelligent personal AI assistant running locally on Apple Silicon.
 
 Temporal & Contextual Awareness:
 - Current datetime: {current_datetime}
+- Current weekday: {current_weekday}
 - User timezone: {user_timezone}
 - Whenever the user specifies relative dates or times (such as "today", "tomorrow", "tonight", "next Monday", "in 2 hours"), you MUST accurately resolve the date and time against Current datetime and supply valid ISO 8601 format with timezone offset (e.g. 2026-09-30T19:00:00+03:00).
+- Never hallucinate incorrect weekdays: calculate day of the week deterministically from the anchor date.
+{temporal_grounding_section}
 {memory_section}
 Operational Rules:
 - Current mode: {agent_mode}.
@@ -49,6 +56,7 @@ class ContextBuilder:
         agent_mode: AgentMode | None = None,
         anchor_datetime: datetime | None = None,
         memory_context: str | None = None,
+        temporal_grounding: str | None = None,
     ) -> ChatMessage:
         """Construct the standardized system message containing current datetime, mode, and memories.
         
@@ -56,6 +64,7 @@ class ContextBuilder:
             agent_mode: Operating mode (defaults to self.default_mode).
             anchor_datetime: Optional explicit datetime for deterministic tests.
             memory_context: Optional formatted memory context string.
+            temporal_grounding: Optional deterministic temporal grounding string.
             
         Returns:
             ChatMessage with MessageRole.SYSTEM.
@@ -63,10 +72,14 @@ class ContextBuilder:
         mode = agent_mode or self.default_mode
         now_dt = anchor_datetime or self.get_current_datetime()
         mem_sec = f"\nRelevant User Memories & Preferences:\n{memory_context}\n" if memory_context else ""
+        temp_sec = f"\n{temporal_grounding}\n" if temporal_grounding else ""
+        current_weekday = f"{weekday_for_date(now_dt, 'en')} ({weekday_for_date(now_dt, 'tr')})"
         content = JARVIS_SYSTEM_PROMPT_TEMPLATE.format(
             current_datetime=now_dt.isoformat(),
+            current_weekday=current_weekday,
             user_timezone=self.timezone_name,
             agent_mode=mode.value.upper(),
+            temporal_grounding_section=temp_sec,
             memory_section=mem_sec,
         )
         return ChatMessage(role=MessageRole.SYSTEM, content=content)
@@ -89,10 +102,17 @@ class ContextBuilder:
         Returns:
             List containing system message and user message.
         """
+        now_dt = anchor_datetime or self.get_current_datetime()
+        temporal_grounding = get_deterministic_temporal_grounding(
+            user_input=user_input,
+            anchor=now_dt,
+            tz_name=self.timezone_name,
+        )
         system_msg = self.build_system_message(
             agent_mode,
-            anchor_datetime=anchor_datetime,
+            anchor_datetime=now_dt,
             memory_context=memory_context,
+            temporal_grounding=temporal_grounding,
         )
         user_msg = ChatMessage(role=MessageRole.USER, content=user_input)
         return [system_msg, user_msg]

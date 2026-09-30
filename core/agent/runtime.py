@@ -28,6 +28,7 @@ from core.models.messages import ChatMessage, MessageRole
 from core.models.tools import ToolCall, ToolResult
 from core.policy.engine import PolicyEngine
 from core.policy.risk import PolicyDecisionType, PolicyRequest
+from core.time.temporal import sanitize_response_temporal_consistency
 from core.tools.executor import ToolExecutor
 from core.tools.registry import ToolRegistry
 
@@ -203,7 +204,12 @@ class AgentRuntime:
             # If no tools called, we proceed to final response
             if not llm_response.tool_calls:
                 self._transition(run_id, AgentState.RESPONDING)
-                agent_run.final_response = llm_response.content or ""
+                raw_resp = llm_response.content or ""
+                agent_run.final_response = sanitize_response_temporal_consistency(
+                    raw_resp,
+                    anchor=agent_run.created_at,
+                    tz_name=self._settings.default_timezone,
+                )
                 # Append final assistant message to conversation history
                 messages.append(ChatMessage(
                     role=MessageRole.ASSISTANT,
@@ -274,7 +280,11 @@ class AgentRuntime:
                 agent_run.pending_tool_call = tool_call
 
                 if llm_response.content:
-                    agent_run.final_response = llm_response.content
+                    agent_run.final_response = sanitize_response_temporal_consistency(
+                        llm_response.content,
+                        anchor=agent_run.created_at,
+                        tz_name=self._settings.default_timezone,
+                    )
                 else:
                     agent_run.final_response = (
                         f"Bu işlem onayınızı gerektiriyor: {tool_call.name} "
