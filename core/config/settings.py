@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     command_poll_interval_seconds: int = 5
     command_lease_duration_seconds: int = 60
 
+    # Apple Native Integration Settings (Milestone 3)
+    apple_integration_provider: Literal["mock", "native_macos"] = "mock"
+    mac_agent_socket_path: str | None = None
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -67,3 +67,15 @@ jobs:
             --only firestore \
             --project jarvis-core-dev \
             ".venv/bin/python scripts/firebase_emulator_test.py --require-emulator"
+
+  swift-macos-agent:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build JarvisMacAgent & Run Swift Unit Tests
+        run: |
+          cd macos/JarvisMacAgent
+          swift test -v
+          swift build -c release

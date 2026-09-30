@@ -39,3 +39,9 @@ credentials*.json
 .DS_Store
 .vscode/
 .idea/
+
+# Swift / macOS Build Artifacts
+.build/
+*.xcodeproj/
+*.xcworkspace/
+*.app/

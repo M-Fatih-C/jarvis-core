@@ -329,7 +329,11 @@ class AgentRuntime:
 
     async def resume_approval(self, approval_id: UUID) -> AgentRun:
         """Resume an AgentRun paused in WAITING_APPROVAL, continuing the cognitive loop."""
-        approval_req = self._approvals.approve(approval_id)
+        existing_req = self._approvals.get(approval_id)
+        current_call = None
+        if existing_req and existing_req.agent_run_id in self._runs:
+            current_call = self._runs[existing_req.agent_run_id].pending_tool_call
+        approval_req = self._approvals.approve(approval_id, current_tool_call=current_call)
         run_id = approval_req.agent_run_id
         agent_run = self._runs[run_id]
 
@@ -340,6 +344,9 @@ class AgentRuntime:
 
         tool_call = approval_req.tool_call
         messages = self._contexts[run_id]
+
+        # Consume the approval (one-time binding, verifying integrity at execution)
+        self._approvals.consume(approval_id, tool_call)
 
         # Transition WAITING_APPROVAL -> EXECUTING_TOOL
         self._transition(run_id, AgentState.EXECUTING_TOOL)

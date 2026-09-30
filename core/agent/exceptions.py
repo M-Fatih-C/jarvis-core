@@ -44,6 +44,11 @@ class ApprovalExpiredError(JarvisError):
     pass
 
 
+class ApprovalIntegrityError(JarvisError):
+    """Raised when action digest mismatch or one-time approval consumption violation occurs."""
+    pass
+
+
 class AgentStateError(JarvisError):
     """Raised on invalid state machine transitions."""
     pass
