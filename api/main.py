@@ -7,7 +7,9 @@ from fastapi.responses import JSONResponse
 from api.dependencies import get_llm_adapter
 from api.routes.approvals import router as approvals_router
 from api.routes.chat import router as chat_router
+from api.routes.cloud import router as cloud_router
 from api.routes.health import router as health_router
+from api.routes.memory import router as memory_router
 from core.agent.exceptions import JarvisError
 from core.config.settings import get_settings
 from core.logging.setup import get_logger, setup_logging
@@ -49,6 +51,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(chat_router)
     app.include_router(approvals_router)
+    app.include_router(memory_router)
+    app.include_router(cloud_router)
 
     # Centralized exception handlers ensuring safe client responses
     @app.exception_handler(JarvisError)

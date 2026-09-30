@@ -1,7 +1,7 @@
 """FastAPI application dependencies and service container."""
 
 from functools import lru_cache
-from typing import Optional
+from typing import Any, Optional
 from core.agent.approval_store import ApprovalStore
 from core.agent.context import ContextBuilder
 from core.agent.runtime import AgentRuntime
@@ -15,6 +15,7 @@ from core.tools.registry import ToolRegistry
 
 _custom_llm_adapter: Optional[LLMAdapter] = None
 _custom_runtime: Optional[AgentRuntime] = None
+_custom_memory_service: Optional[Any] = None
 
 
 def set_custom_llm_adapter(adapter: Optional[LLMAdapter]) -> None:
@@ -22,6 +23,13 @@ def set_custom_llm_adapter(adapter: Optional[LLMAdapter]) -> None:
     global _custom_llm_adapter, _custom_runtime
     _custom_llm_adapter = adapter
     _custom_runtime = None  # Reset runtime to pick up new adapter
+
+
+def set_custom_memory_service(service: Optional[Any]) -> None:
+    """Override default memory service (useful for testing)."""
+    global _custom_memory_service, _custom_runtime
+    _custom_memory_service = service
+    _custom_runtime = None
 
 
 def set_custom_runtime(runtime: Optional[AgentRuntime]) -> None:
@@ -67,6 +75,20 @@ def _get_default_mlx_adapter() -> LLMAdapter:
     return QwenMLXAdapter(settings=settings)
 
 
+def get_memory_service() -> Any:
+    """Return active MemoryService singleton."""
+    global _custom_memory_service
+    if _custom_memory_service is not None:
+        return _custom_memory_service
+    return _get_default_memory_service()
+
+
+@lru_cache(maxsize=1)
+def _get_default_memory_service() -> Any:
+    from core.memory.service import MemoryService
+    return MemoryService()
+
+
 def get_agent_runtime() -> AgentRuntime:
     """Return AgentRuntime singleton."""
     global _custom_runtime
@@ -84,5 +106,6 @@ def _get_default_runtime() -> AgentRuntime:
         tool_executor=get_tool_executor(),
         approval_store=ApprovalStore(),
         context_builder=ContextBuilder(),
+        memory_service=get_memory_service(),
         settings=get_settings(),
     )
