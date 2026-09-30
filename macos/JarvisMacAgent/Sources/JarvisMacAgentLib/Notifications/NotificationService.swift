@@ -76,6 +76,7 @@ public final class NotificationService: NotificationServiceProtocol, @unchecked 
                     "identifier": id,
                     "title": title,
                     "body": body,
+                    "provider": "user_notifications",
                 ]
             } catch {
                 throw NotificationServiceError.schedulingFailed(error.localizedDescription)
@@ -93,6 +94,7 @@ public final class NotificationService: NotificationServiceProtocol, @unchecked 
                 "identifier": id,
                 "title": title,
                 "body": body,
+                "provider": "applescript_fallback",
             ]
         }
     }

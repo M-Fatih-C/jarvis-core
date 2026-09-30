@@ -20,6 +20,8 @@ logger = get_logger("jarvis.mac_bridge")
 
 ALLOWED_METHODS = frozenset({
     "system.health",
+    "system.request_permissions",
+    "system.start_at_login",
     "calendar.list_calendars",
     "calendar.list_events",
     "calendar.get_event",

@@ -56,6 +56,16 @@ class ListEventsInput(BaseModel):
     calendar_ids: list[str] | None = Field(default=None, description="Optional list of specific calendar IDs to filter")
     limit: int = Field(default=50, ge=1, le=200, description="Maximum number of events to return")
 
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def sanitize_datetime_str(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            if "T24:00:00" in v:
+                v = v.replace("T24:00:00", "T23:59:59")
+            elif "T24:00" in v:
+                v = v.replace("T24:00", "T23:59")
+        return v
+
     @field_validator("start", "end")
     @classmethod
     def validate_tz(cls, v: datetime) -> datetime:
@@ -147,6 +157,16 @@ class CreateEventInput(BaseModel):
     notes: str | None = Field(default=None, description="Optional description or notes for the event")
     location: str | None = Field(default=None, description="Optional physical or virtual location")
     alarm_minutes_before: int | None = Field(default=None, ge=0, description="Optional alert reminder in minutes prior to start")
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def sanitize_datetime_str(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            if "T24:00:00" in v:
+                v = v.replace("T24:00:00", "T23:59:59")
+            elif "T24:00" in v:
+                v = v.replace("T24:00", "T23:59")
+        return v
 
     @field_validator("start", "end")
     @classmethod

@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 
 public final class RPCDispatcher: Sendable {
     private let calendarService: CalendarServiceProtocol
@@ -33,6 +34,63 @@ public final class RPCDispatcher: Sendable {
                     "notification_permission": notifPerm,
                 ]
                 return .success(id: request.id, result: AnyCodable(healthResult))
+
+            case "system.request_permissions":
+                let reqCal = (request.params["calendar"]?.value as? Bool) ?? true
+                let reqRem = (request.params["reminders"]?.value as? Bool) ?? true
+                let reqNotif = (request.params["notifications"]?.value as? Bool) ?? true
+
+                var calGranted = false
+                var remGranted = false
+                var notifGranted = false
+
+                if reqCal {
+                    calGranted = await permissionService.requestCalendarAccess()
+                }
+                if reqRem {
+                    remGranted = await permissionService.requestRemindersAccess()
+                }
+                if reqNotif {
+                    notifGranted = await permissionService.requestNotificationAccess()
+                }
+
+                let calPerm = permissionService.calendarStatus().rawValue
+                let remPerm = permissionService.remindersStatus().rawValue
+                let notifPerm = await permissionService.notificationStatus().rawValue
+
+                return .success(id: request.id, result: AnyCodable([
+                    "calendar_granted": calGranted,
+                    "reminders_granted": remGranted,
+                    "notification_granted": notifGranted,
+                    "calendar_permission": calPerm,
+                    "reminders_permission": remPerm,
+                    "notification_permission": notifPerm,
+                ]))
+
+            case "system.start_at_login":
+                let action = (request.params["action"]?.value as? String) ?? "status"
+                var isEnabled = false
+                var statusStr = "unsupported"
+                if #available(macOS 13.0, *) {
+                    let service = SMAppService.mainApp
+                    if action == "enable" {
+                        try? service.register()
+                    } else if action == "disable" {
+                        try? await service.unregister()
+                    }
+                    isEnabled = (service.status == .enabled)
+                    switch service.status {
+                    case .notRegistered: statusStr = "not_registered"
+                    case .enabled: statusStr = "enabled"
+                    case .requiresApproval: statusStr = "requires_approval"
+                    case .notFound: statusStr = "not_found"
+                    @unknown default: statusStr = "unknown"
+                    }
+                }
+                return .success(id: request.id, result: AnyCodable([
+                    "enabled": isEnabled,
+                    "status": statusStr,
+                ]))
 
             // MARK: - Calendar APIs
             case "calendar.list_calendars":

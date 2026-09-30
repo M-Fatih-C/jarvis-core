@@ -21,7 +21,7 @@ class ProfileConfig(BaseModel):
 
 # Inference profile presets
 PROFILE_SETTINGS: dict[InferenceProfile, ProfileConfig] = {
-    InferenceProfile.FAST: ProfileConfig(temperature=0.2, max_tokens=512, top_p=0.8),
+    InferenceProfile.FAST: ProfileConfig(temperature=0.2, max_tokens=1024, top_p=0.8),
     InferenceProfile.DEEP: ProfileConfig(temperature=0.7, max_tokens=2048, top_p=0.95),
 }
 
