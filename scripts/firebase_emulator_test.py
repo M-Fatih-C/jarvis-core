@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
@@ -49,23 +50,32 @@ def is_emulator_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
         return False
 
 
-async def run_emulator_tests() -> None:
+async def run_emulator_tests(require_emulator: bool = False) -> None:
     emulator_host = os.environ.get("FIRESTORE_EMULATOR_HOST", "127.0.0.1:8080")
-    host, port_str = emulator_host.split(":")
-    port = int(port_str)
+    if ":" in emulator_host:
+        host, port_str = emulator_host.split(":")
+        port = int(port_str)
+    else:
+        host = emulator_host
+        port = 8080
 
     print("=" * 70)
     print("JARVIS MILESTONE 2: FIREBASE EMULATOR INTEGRATION SUITE")
     print("=" * 70)
-    print(f"[*] Checking Firestore Emulator at {emulator_host}...")
+    print(f"[*] Checking Firestore Emulator at {emulator_host} (require_emulator={require_emulator})...")
 
     if not is_emulator_reachable(host, port):
+        if require_emulator:
+            print(f"\n[!] FATAL ERROR: Firestore Emulator is strictly required (--require-emulator) but was unreachable at {emulator_host}!")
+            print("[!] Ensure Firebase emulator is active (e.g. firebase emulators:exec or firebase emulators:start).")
+            sys.exit(1)
+
         print(f"\n[!] WARNING: Firestore Emulator is not reachable at {emulator_host}.")
         print("[!] Note: On macOS, Firebase Emulator requires Java runtime (`brew install openjdk`).")
         print("[!] To run the emulator, execute in a separate terminal:")
         print("      export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080")
         print("      firebase emulators:start --only firestore")
-        print("\n[*] Skipping live emulator assertions. All unit and contract tests are verified in pytest.")
+        print("\n[*] Skipping live emulator assertions. (Use --require-emulator to enforce strict check).")
         return
 
     print("[*] Emulator reachable! Initializing Firestore repositories...")
@@ -228,7 +238,14 @@ async def run_emulator_tests() -> None:
 
 
 def main() -> None:
-    asyncio.run(run_emulator_tests())
+    parser = argparse.ArgumentParser(description="Jarvis Firebase Emulator Test Suite")
+    parser.add_argument(
+        "--require-emulator",
+        action="store_true",
+        help="Enforce strict acceptance mode: exit with non-zero code if emulator is offline",
+    )
+    args = parser.parse_args()
+    asyncio.run(run_emulator_tests(require_emulator=args.require_emulator))
 
 
 if __name__ == "__main__":
