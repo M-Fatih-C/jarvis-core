@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     apple_integration_provider: Literal["mock", "native_macos"] = "mock"
     mac_agent_socket_path: str | None = None
 
+    # Gmail Integration Settings (Milestone 4.1)
+    gmail_enabled: bool = False
+    gmail_client_id: str | None = None
+    gmail_client_secret: str | None = None
+    gmail_sync_lookback_days: int = 7
+    gmail_max_sync_messages: int = 25
+    email_db_path: str = "~/Library/Application Support/Jarvis/email.db"
+    email_sync_schedule_enabled: bool = False  # Explicit opt-in required
+    email_sync_times: list[str] = ["09:00", "20:00"]
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
