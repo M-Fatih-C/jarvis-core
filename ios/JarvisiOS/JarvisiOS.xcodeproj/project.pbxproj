@@ -1,0 +1,428 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1001 /* JarvisiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2001 /* JarvisiOSApp.swift */; };
+		1002 /* CloudCommandDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2002 /* CloudCommandDTO.swift */; };
+		1003 /* TaskProposalDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2003 /* TaskProposalDTO.swift */; };
+		1004 /* CalendarEventDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2004 /* CalendarEventDTO.swift */; };
+		1005 /* EmailAnalysisDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2005 /* EmailAnalysisDTO.swift */; };
+		1006 /* JarvisAPIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2006 /* JarvisAPIService.swift */; };
+		1007 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2007 /* ChatViewModel.swift */; };
+		1008 /* ApprovalsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2008 /* ApprovalsViewModel.swift */; };
+		1009 /* CalendarViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2009 /* CalendarViewModel.swift */; };
+		1010 /* EmailsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2010 /* EmailsViewModel.swift */; };
+		1011 /* DeviceStatusViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2011 /* DeviceStatusViewModel.swift */; };
+		1012 /* AuthViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2012 /* AuthViewModel.swift */; };
+		1013 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2013 /* ChatView.swift */; };
+		1014 /* ApprovalsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2014 /* ApprovalsView.swift */; };
+		1015 /* CalendarScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2015 /* CalendarScheduleView.swift */; };
+		1016 /* EmailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2016 /* EmailsView.swift */; };
+		1017 /* DeviceStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2017 /* DeviceStatusView.swift */; };
+		1018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2018 /* SettingsView.swift */; };
+		1019 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2019 /* MainTabView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0001 /* JarvisiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JarvisiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2001 /* JarvisiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisiOSApp.swift; sourceTree = "<group>"; };
+		2002 /* CloudCommandDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudCommandDTO.swift; sourceTree = "<group>"; };
+		2003 /* TaskProposalDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskProposalDTO.swift; sourceTree = "<group>"; };
+		2004 /* CalendarEventDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarEventDTO.swift; sourceTree = "<group>"; };
+		2005 /* EmailAnalysisDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailAnalysisDTO.swift; sourceTree = "<group>"; };
+		2006 /* JarvisAPIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisAPIService.swift; sourceTree = "<group>"; };
+		2007 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
+		2008 /* ApprovalsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalsViewModel.swift; sourceTree = "<group>"; };
+		2009 /* CalendarViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarViewModel.swift; sourceTree = "<group>"; };
+		2010 /* EmailsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailsViewModel.swift; sourceTree = "<group>"; };
+		2011 /* DeviceStatusViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStatusViewModel.swift; sourceTree = "<group>"; };
+		2012 /* AuthViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthViewModel.swift; sourceTree = "<group>"; };
+		2013 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		2014 /* ApprovalsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalsView.swift; sourceTree = "<group>"; };
+		2015 /* CalendarScheduleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarScheduleView.swift; sourceTree = "<group>"; };
+		2016 /* EmailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailsView.swift; sourceTree = "<group>"; };
+		2017 /* DeviceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceStatusView.swift; sourceTree = "<group>"; };
+		2018 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		2019 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		2020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5001 = {
+			isa = PBXGroup;
+			children = (
+				5002 /* JarvisiOS */,
+				5003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5002 /* JarvisiOS */ = {
+			isa = PBXGroup;
+			children = (
+				2001 /* JarvisiOSApp.swift */,
+				5004 /* Models */,
+				5005 /* Services */,
+				5006 /* ViewModels */,
+				5007 /* Views */,
+				2020 /* Info.plist */,
+			);
+			path = JarvisiOS;
+			sourceTree = "<group>";
+		};
+		5003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0001 /* JarvisiOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5004 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				2002 /* CloudCommandDTO.swift */,
+				2003 /* TaskProposalDTO.swift */,
+				2004 /* CalendarEventDTO.swift */,
+				2005 /* EmailAnalysisDTO.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		5005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				2006 /* JarvisAPIService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		5006 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				2007 /* ChatViewModel.swift */,
+				2008 /* ApprovalsViewModel.swift */,
+				2009 /* CalendarViewModel.swift */,
+				2010 /* EmailsViewModel.swift */,
+				2011 /* DeviceStatusViewModel.swift */,
+				2012 /* AuthViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		5007 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				2013 /* ChatView.swift */,
+				2014 /* ApprovalsView.swift */,
+				2015 /* CalendarScheduleView.swift */,
+				2016 /* EmailsView.swift */,
+				2017 /* DeviceStatusView.swift */,
+				2018 /* SettingsView.swift */,
+				2019 /* MainTabView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		6001 /* JarvisiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7001 /* Build configuration list for PBXNativeTarget "JarvisiOS" */;
+			buildPhases = (
+				8001 /* Sources */,
+				4001 /* Frameworks */,
+				9001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JarvisiOS;
+			productName = JarvisiOS;
+			productReference = 0001 /* JarvisiOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					6001 = {
+						CreatedOnToolsVersion = 16.0;
+						DevelopmentTeam = T92VJM9C5B;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 7000 /* Build configuration list for PBXProject "JarvisiOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5001;
+			productRefGroup = 5003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				6001 /* JarvisiOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		9001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1001 /* JarvisiOSApp.swift in Sources */,
+				1002 /* CloudCommandDTO.swift in Sources */,
+				1003 /* TaskProposalDTO.swift in Sources */,
+				1004 /* CalendarEventDTO.swift in Sources */,
+				1005 /* EmailAnalysisDTO.swift in Sources */,
+				1006 /* JarvisAPIService.swift in Sources */,
+				1007 /* ChatViewModel.swift in Sources */,
+				1008 /* ApprovalsViewModel.swift in Sources */,
+				1009 /* CalendarViewModel.swift in Sources */,
+				1010 /* EmailsViewModel.swift in Sources */,
+				1011 /* DeviceStatusViewModel.swift in Sources */,
+				1012 /* AuthViewModel.swift in Sources */,
+				1013 /* ChatView.swift in Sources */,
+				1014 /* ApprovalsView.swift in Sources */,
+				1015 /* CalendarScheduleView.swift in Sources */,
+				1016 /* EmailsView.swift in Sources */,
+				1017 /* DeviceStatusView.swift in Sources */,
+				1018 /* SettingsView.swift in Sources */,
+				1019 /* MainTabView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		7101 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDEFINED_VARIABLES = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		7102 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDEFINED_VARIABLES = YES;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		7201 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T92VJM9C5B;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = JarvisiOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mfatihc.jarvis;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1";
+			};
+			name = Debug;
+		};
+		7202 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = T92VJM9C5B;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = JarvisiOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mfatihc.jarvis;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		7000 /* Build configuration list for PBXProject "JarvisiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7101 /* Debug */,
+				7102 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7001 /* Build configuration list for PBXNativeTarget "JarvisiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7201 /* Debug */,
+				7202 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0000 /* Project object */;
+}

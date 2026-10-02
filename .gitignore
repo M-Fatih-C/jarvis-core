@@ -40,8 +40,11 @@ credentials*.json
 .vscode/
 .idea/
 
-# Swift / macOS Build Artifacts
+# Swift / macOS Build Artifacts & Credentials
 .build/
-*.xcodeproj/
+xcuserdata/
 *.xcworkspace/
 *.app/
+*.mobileprovision
+*.p12
+*.cer
