@@ -34,3 +34,9 @@ class GmailNetworkError(GmailIntegrationError):
 class GmailMessageNotFoundError(GmailIntegrationError):
     """Raised when an email message has been deleted or is inaccessible."""
     pass
+
+
+class GmailHistoryExpiredError(GmailIntegrationError):
+    """Raised when startHistoryId is out of date or expired (HTTP 404), requiring full lookback reinitialization."""
+    pass
+

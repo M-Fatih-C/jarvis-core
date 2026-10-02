@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from core.logging.setup import get_logger
+from core.memory.crypto import KeyProvider, MacKeychainKeyProvider, MemoryEncryptor
 from integrations.gmail.models import (
     AttachmentMetadata,
     EmailSyncState,
@@ -22,9 +23,18 @@ logger = get_logger("jarvis.gmail.storage")
 
 
 class EmailStorage:
-    """Thread-safe SQLite persistent store for email sync state, messages, and task proposals."""
+    """Thread-safe SQLite persistent store for email sync state, messages, and task proposals.
+    
+    Retained message bodies are encrypted at rest with AES-256-GCM using keys managed
+    through macOS Keychain via MacKeychainKeyProvider.
+    """
 
-    def __init__(self, db_path: str = ":memory:") -> None:
+    def __init__(
+        self,
+        db_path: str = ":memory:",
+        key_provider: KeyProvider | None = None,
+        encryption_enabled: bool = True,
+    ) -> None:
         if db_path != ":memory:":
             expanded_path = Path(os.path.expanduser(db_path)).resolve()
             expanded_path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,6 +42,12 @@ class EmailStorage:
         else:
             self._db_path = ":memory:"
 
+        self.encryption_enabled = encryption_enabled
+        self.key_provider = key_provider or MacKeychainKeyProvider(
+            service_name="com.jarvis.email",
+            username="email_storage_key",
+            fallback_to_memory=(self._db_path == ":memory:"),
+        )
         self._lock = asyncio.Lock()
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
@@ -187,8 +203,21 @@ class EmailStorage:
             )
             return cursor.fetchone() is not None
 
+    async def _decrypt_text(self, text: str | None) -> str:
+        """Decrypt AES-256-GCM encrypted payload or return cleartext as fallback."""
+        if not text or not self.encryption_enabled:
+            return text or ""
+        if text.startswith('{"ciphertext":'):
+            try:
+                key = await self.key_provider.get_or_create_memory_key()
+                return MemoryEncryptor.decrypt(text, key)
+            except Exception as exc:
+                logger.warning("email_body_decrypt_failed", error=str(exc))
+                return "[ENCRYPTED CONTENT]"
+        return text
+
     async def save_email(self, email: NormalizedEmail, account_email: str) -> bool:
-        """Save normalized email. Returns True if inserted, False if duplicate."""
+        """Save normalized email with AES-256-GCM encrypted body. Returns True if inserted."""
         if await self.is_email_processed(email.message_id):
             return False
 
@@ -196,6 +225,19 @@ class EmailStorage:
         att_json = json.dumps([a.model_dump() for a in email.attachments])
         headers_json = json.dumps(email.headers)
         labels_json = json.dumps(email.labels)
+
+        # Encrypt body content at rest
+        body_to_store = email.body_plain
+        preview_to_store = email.body_preview
+        if self.encryption_enabled:
+            try:
+                key = await self.key_provider.get_or_create_memory_key()
+                if email.body_plain:
+                    body_to_store = json.dumps(MemoryEncryptor.encrypt(email.body_plain, key))
+                if email.body_preview:
+                    preview_to_store = json.dumps(MemoryEncryptor.encrypt(email.body_preview, key))
+            except Exception as exc:
+                logger.warning("email_body_encrypt_failed_storing_plain", error=str(exc))
 
         async with self._lock:
             with self._conn:
@@ -216,8 +258,8 @@ class EmailStorage:
                         email.recipient,
                         email.subject,
                         email.received_at.isoformat(),
-                        email.body_plain,
-                        email.body_preview,
+                        body_to_store,
+                        preview_to_store,
                         att_json,
                         headers_json,
                         labels_json,
@@ -228,7 +270,7 @@ class EmailStorage:
             return True
 
     async def get_email(self, message_id: str) -> NormalizedEmail | None:
-        """Retrieve stored normalized email."""
+        """Retrieve stored normalized email with decrypted body."""
         async with self._lock:
             cursor = self._conn.execute("SELECT * FROM emails WHERE message_id = ?", (message_id,))
             row = cursor.fetchone()
@@ -236,6 +278,9 @@ class EmailStorage:
                 return None
 
             attachments = [AttachmentMetadata(**a) for a in json.loads(row["attachments_json"] or "[]")]
+            decrypted_body = await self._decrypt_text(row["body_plain"])
+            decrypted_preview = await self._decrypt_text(row["body_preview"])
+
             return NormalizedEmail(
                 message_id=row["message_id"],
                 thread_id=row["thread_id"],
@@ -244,8 +289,8 @@ class EmailStorage:
                 recipient=row["recipient"],
                 subject=row["subject"],
                 received_at=datetime.fromisoformat(row["received_at"]),
-                body_plain=row["body_plain"] or "",
-                body_preview=row["body_preview"] or "",
+                body_plain=decrypted_body,
+                body_preview=decrypted_preview,
                 attachments=attachments,
                 headers=json.loads(row["headers_json"] or "{}"),
                 labels=json.loads(row["labels_json"] or "[]"),
@@ -253,7 +298,7 @@ class EmailStorage:
             )
 
     async def get_recent_emails(self, account_email: str, limit: int = 50) -> list[NormalizedEmail]:
-        """Fetch recently received emails."""
+        """Fetch recently received emails with decrypted bodies."""
         async with self._lock:
             cursor = self._conn.execute(
                 """
@@ -268,6 +313,8 @@ class EmailStorage:
             results: list[NormalizedEmail] = []
             for row in rows:
                 attachments = [AttachmentMetadata(**a) for a in json.loads(row["attachments_json"] or "[]")]
+                decrypted_body = await self._decrypt_text(row["body_plain"])
+                decrypted_preview = await self._decrypt_text(row["body_preview"])
                 results.append(
                     NormalizedEmail(
                         message_id=row["message_id"],
@@ -277,8 +324,8 @@ class EmailStorage:
                         recipient=row["recipient"],
                         subject=row["subject"],
                         received_at=datetime.fromisoformat(row["received_at"]),
-                        body_plain=row["body_plain"] or "",
-                        body_preview=row["body_preview"] or "",
+                        body_plain=decrypted_body,
+                        body_preview=decrypted_preview,
                         attachments=attachments,
                         headers=json.loads(row["headers_json"] or "{}"),
                         labels=json.loads(row["labels_json"] or "[]"),
@@ -286,6 +333,50 @@ class EmailStorage:
                     )
                 )
             return results
+
+    async def delete_email(self, message_id: str) -> bool:
+        """Delete an email and related records from local storage."""
+        async with self._lock:
+            with self._conn:
+                cursor = self._conn.execute("DELETE FROM emails WHERE message_id = ?", (message_id,))
+                self._conn.execute("DELETE FROM email_analyses WHERE message_id = ?", (message_id,))
+                self._conn.execute("DELETE FROM task_proposals WHERE source_message_id = ?", (message_id,))
+                self._conn.execute("DELETE FROM sent_notifications WHERE message_id = ?", (message_id,))
+                return cursor.rowcount > 0
+
+    async def prune_retained_bodies(self, older_than_days: int = 14) -> int:
+        """Clear body_plain for emails older than older_than_days while retaining metadata."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        cutoff_iso = cutoff.isoformat()
+        async with self._lock:
+            with self._conn:
+                cursor = self._conn.execute(
+                    "UPDATE emails SET body_plain = '' WHERE received_at < ? AND body_plain != ''",
+                    (cutoff_iso,),
+                )
+                logger.info("pruned_old_email_bodies", count=cursor.rowcount, older_than_days=older_than_days)
+                return cursor.rowcount
+
+    async def clear_account_data(self, account_email: str) -> None:
+        """Completely purge all cached emails, analyses, task proposals, and sync state for an account."""
+        async with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM task_proposals WHERE source_message_id IN (SELECT message_id FROM emails WHERE account_email = ?)",
+                    (account_email,),
+                )
+                self._conn.execute(
+                    "DELETE FROM email_analyses WHERE message_id IN (SELECT message_id FROM emails WHERE account_email = ?)",
+                    (account_email,),
+                )
+                self._conn.execute(
+                    "DELETE FROM sent_notifications WHERE message_id IN (SELECT message_id FROM emails WHERE account_email = ?)",
+                    (account_email,),
+                )
+                self._conn.execute("DELETE FROM emails WHERE account_email = ?", (account_email,))
+                self._conn.execute("DELETE FROM email_sync_state WHERE account_email = ?", (account_email,))
+                logger.info("cleared_account_data", account=account_email)
+
 
     async def save_task_proposal(self, proposal: dict[str, Any]) -> None:
         """Store an extracted task proposal."""

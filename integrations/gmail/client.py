@@ -11,6 +11,7 @@ from core.logging.setup import get_logger
 from integrations.gmail.auth import GmailOAuthManager
 from integrations.gmail.exceptions import (
     GmailAuthError,
+    GmailHistoryExpiredError,
     GmailIntegrationError,
     GmailMessageNotFoundError,
     GmailNetworkError,
@@ -81,6 +82,8 @@ class GmailClient:
 
                 # Handle 404 Not Found
                 if resp.status_code == 404:
+                    if endpoint.startswith("/history") or "startHistoryId" in (params or {}):
+                        raise GmailHistoryExpiredError(f"Gmail history cursor expired for {endpoint}")
                     raise GmailMessageNotFoundError(f"Requested Gmail resource not found: {endpoint}")
 
                 # Handle 429 Too Many Requests
@@ -164,12 +167,15 @@ class GmailClient:
         self,
         start_history_id: str,
         max_results: int = 100,
+        page_token: str | None = None,
         account: str = "default",
     ) -> dict[str, Any]:
         """Fetch history records since start_history_id for incremental sync."""
-        params = {
+        params: dict[str, Any] = {
             "startHistoryId": start_history_id,
             "maxResults": min(max_results, 500),
-            "historyTypes": ["messageAdded"],
+            "historyTypes": ["messageAdded", "messageDeleted"],
         }
+        if page_token:
+            params["pageToken"] = page_token
         return await self._request("GET", "/history", params=params, account=account)

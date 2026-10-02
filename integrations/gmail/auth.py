@@ -291,3 +291,95 @@ class GmailOAuthManager:
         """Check if active tokens exist in Keychain for the account."""
         tokens = self.token_store.load_tokens(account)
         return tokens is not None
+
+    async def start_interactive_auth_flow(
+        self,
+        port: int = 8766,
+        timeout: float = 180.0,
+        account: str = "default",
+        open_browser: bool = True,
+    ) -> OAuthTokens:
+        """Run interactive loopback OAuth 2.0 PKCE flow for desktop app."""
+        if not self.client_id:
+            raise GmailAuthError("GMAIL_CLIENT_ID must be configured for OAuth authentication.")
+
+        verifier, challenge = self.generate_pkce_pair()
+        state = secrets.token_urlsafe(32)
+        redirect_uri = f"http://127.0.0.1:{port}"
+        auth_url = self.create_authorization_url(redirect_uri, state, challenge)
+
+        loop = asyncio.get_running_loop()
+        code_future: asyncio.Future[str] = loop.create_future()
+
+        async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            try:
+                line = await reader.readline()
+                request_line = line.decode("utf-8", errors="replace")
+                parts = request_line.split()
+                if len(parts) >= 2 and parts[0] == "GET":
+                    parsed = urlparse(parts[1])
+                    query = parse_qs(parsed.query)
+
+                    if "error" in query:
+                        err = query["error"][0]
+                        if not code_future.done():
+                            code_future.set_exception(GmailAuthError(f"OAuth error: {err}"))
+                        body = "<html><body><h2>Authorization Denied</h2><p>You may close this tab.</p></body></html>"
+                        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + body.encode("utf-8"))
+                    elif "code" in query and "state" in query:
+                        ret_state = query["state"][0]
+                        ret_code = query["code"][0]
+                        if ret_state != state:
+                            if not code_future.done():
+                                code_future.set_exception(GmailAuthError("CSRF State mismatch!"))
+                            body = "<html><body><h2>CSRF State Mismatch</h2><p>Security validation failed.</p></body></html>"
+                            writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + body.encode("utf-8"))
+                        else:
+                            if not code_future.done():
+                                code_future.set_result(ret_code)
+                            body = "<html><body style='font-family: system-ui; text-align: center; padding: 40px;'><h2>\u2705 Jarvis Gmail Yetkilendirmesi Ba\u015far\u0131l\u0131!</h2><p>Bu pencereyi kapatabilirsiniz.</p></body></html>"
+                            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n" + body.encode("utf-8"))
+                    else:
+                        writer.write(b"HTTP/1.1 404 Not Found\r\n\r\n")
+                await writer.drain()
+            finally:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+        server = await asyncio.start_server(_handle_client, "127.0.0.1", port)
+        logger.info("oauth_loopback_server_listening", port=port)
+
+        print("\n" + "=" * 70)
+        print("GOOGLE OAUTH 2.0 AUTHORIZATION REQUIRED")
+        print("=" * 70)
+        print("Please visit the following URL to connect your Gmail account:")
+        print(f"\n{auth_url}\n")
+        print("=" * 70 + "\n")
+
+        if open_browser:
+            try:
+                import webbrowser
+                webbrowser.open(auth_url)
+            except Exception:
+                pass
+
+        try:
+            auth_code = await asyncio.wait_for(code_future, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise GmailAuthError(f"OAuth authorization timed out after {timeout} seconds.")
+        finally:
+            server.close()
+            await server.wait_closed()
+
+        tokens = await self.exchange_code(
+            code=auth_code,
+            code_verifier=verifier,
+            redirect_uri=redirect_uri,
+        )
+        self.token_store.save_tokens(account, tokens)
+        logger.info("oauth_authorization_completed_successfully", account=account)
+        return tokens
+

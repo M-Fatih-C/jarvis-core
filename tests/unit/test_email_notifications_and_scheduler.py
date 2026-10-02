@@ -96,13 +96,47 @@ async def test_notification_dispatch_and_deduplication(memory_storage: EmailStor
 
     # 1. First dispatch -> Sends notification and records
     dispatched1 = await service.notify_if_important(email, analysis)
-    assert dispatched1 is True
+    assert dispatched1.dispatched is True
+    assert dispatched1.status == "delivered"
     assert mock_bridge.call.call_count == 1
 
     # 2. Second dispatch -> Deduplicated, bridge not called again
     dispatched2 = await service.notify_if_important(email, analysis)
-    assert dispatched2 is False
+    assert dispatched2.dispatched is False
+    assert dispatched2.status == "skipped_duplicate"
     assert mock_bridge.call.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_notification_degraded_when_permission_unavailable(memory_storage: EmailStorage) -> None:
+    mock_bridge = AsyncMock(spec=MacBridgeClient)
+    # Bridge returns denied permission
+    mock_bridge.call.return_value = {"status": "denied", "delivered": False}
+    service = EmailNotificationService(storage=memory_storage, bridge_client=mock_bridge)
+
+    email = NormalizedEmail(
+        message_id="msg_notify_degraded",
+        thread_id="t_deg",
+        sender="HR Team <hr@tech.com>",
+        recipient="user@test.com",
+        subject="Important Alert",
+        received_at=datetime.now(timezone.utc),
+        body_plain="Alert text",
+        content_hash="mock_hash_deg",
+    )
+    analysis = EmailAnalysisResult(
+        category=EmailCategory.WORK_CAREER,
+        importance=ImportanceLevel.HIGH,
+        summary="Important alert",
+        proposed_action="Review",
+    )
+
+    result = await service.notify_if_important(email, analysis)
+    # Must report explicit degraded status, NOT successful delivery!
+    assert result.dispatched is False
+    assert result.status == "permission_unavailable"
+    assert "denied" in result.reason
+
 
 
 def test_scheduler_explicit_consent_guard() -> None:

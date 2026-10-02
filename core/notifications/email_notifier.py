@@ -31,6 +31,28 @@ def sanitize_notification_body(text: str) -> str:
     return sanitized.strip()
 
 
+class NotificationDispatchResult:
+    """Detailed result of a notification evaluation and dispatch attempt."""
+
+    def __init__(
+        self,
+        dispatched: bool,
+        status: str,
+        reason: str = "",
+        notification_id: str | None = None,
+    ) -> None:
+        self.dispatched = dispatched
+        self.status = status  # delivered, skipped_unimportant, skipped_duplicate, permission_unavailable, bridge_failed
+        self.reason = reason
+        self.notification_id = notification_id
+
+    def __bool__(self) -> bool:
+        return self.dispatched
+
+    def __repr__(self) -> str:
+        return f"<NotificationDispatchResult dispatched={self.dispatched} status={self.status} reason='{self.reason}'>"
+
+
 class EmailNotificationService:
     """Filters, deduplicates, and dispatches native macOS notifications for important emails."""
 
@@ -82,20 +104,28 @@ class EmailNotificationService:
         email: NormalizedEmail,
         analysis: EmailAnalysisResult,
         task: TaskProposal | None = None,
-    ) -> bool:
+    ) -> NotificationDispatchResult:
         """Evaluate and send native macOS notification if the email is important and not a duplicate.
         
         Returns:
-            True if notification was dispatched, False otherwise.
+            NotificationDispatchResult indicating delivery or explicit degraded/skipped reason.
         """
         if not self.should_notify(analysis):
             logger.debug("email_notification_skipped_not_important", msg_id=email.message_id)
-            return False
+            return NotificationDispatchResult(
+                dispatched=False,
+                status="skipped_unimportant",
+                reason="Email is promotional or low priority",
+            )
 
         # Deduplication check
         if await self.storage.is_notification_sent(email.message_id):
             logger.info("email_notification_skipped_already_sent", msg_id=email.message_id)
-            return False
+            return NotificationDispatchResult(
+                dispatched=False,
+                status="skipped_duplicate",
+                reason=f"Notification already recorded for message {email.message_id}",
+            )
 
         # Format notification contents concisely
         clean_subject = (email.subject[:60] + "...") if len(email.subject) > 60 else email.subject
@@ -115,10 +145,10 @@ class EmailNotificationService:
         notification_id = f"gmail_{email.message_id}"
         task_id_str = str(task.task_id) if task else None
 
-        dispatched = False
         if self.bridge_client:
             try:
-                await self.bridge_client.call(
+                # Check status first if possible or attempt show
+                res = await self.bridge_client.call(
                     "notifications.show",
                     {
                         "title": title,
@@ -126,22 +156,38 @@ class EmailNotificationService:
                         "identifier": notification_id,
                     },
                 )
-                dispatched = True
+                # Verify that delivery actually succeeded
+                if isinstance(res, dict) and res.get("status") in ("denied", "not_authorized", "failed"):
+                    logger.warning("native_notification_permission_unavailable", status=res.get("status"))
+                    return NotificationDispatchResult(
+                        dispatched=False,
+                        status="permission_unavailable",
+                        reason=f"macOS notification permission is {res.get('status')}",
+                    )
+
                 logger.info("email_notification_dispatched", msg_id=email.message_id, title=title)
             except Exception as exc:
                 logger.warning("email_notification_bridge_failed", error=str(exc))
+                return NotificationDispatchResult(
+                    dispatched=False,
+                    status="bridge_failed",
+                    reason=str(exc),
+                )
         else:
-            # When bridge is not connected (e.g. headless/mock mode), record as notified
-            dispatched = True
+            # Mock / headless environment without active bridge connection
             logger.info("email_notification_recorded_mock", msg_id=email.message_id, title=title)
 
         # Record notification to prevent duplicate future alerts
-        if dispatched:
-            await self.storage.record_sent_notification(
-                notification_id=notification_id,
-                message_id=email.message_id,
-                title=title,
-                task_id=task_id_str,
-            )
+        await self.storage.record_sent_notification(
+            notification_id=notification_id,
+            message_id=email.message_id,
+            title=title,
+            task_id=task_id_str,
+        )
 
-        return dispatched
+        return NotificationDispatchResult(
+            dispatched=True,
+            status="delivered",
+            notification_id=notification_id,
+        )
+
