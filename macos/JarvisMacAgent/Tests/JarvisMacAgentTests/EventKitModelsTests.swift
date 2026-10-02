@@ -23,6 +23,23 @@ final class EventKitModelsTests: XCTestCase {
         XCTAssertEqual(RecurrenceScope.thisOccurrence.ekSpan, EKSpan.thisEvent)
         XCTAssertEqual(RecurrenceScope.futureOccurrences.ekSpan, EKSpan.futureEvents)
     }
+    
+    func testCalendarDTOEncoding() throws {
+        let dto = CalendarDTO(
+            id: "cal-icloud-1",
+            title: "Work",
+            color: "#007AFF",
+            allows_modifications: true,
+            source_title: "iCloud",
+            source_type: "calDAV"
+        )
+
+        let data = try JSONEncoder().encode(dto)
+        let decoded = try JSONDecoder().decode(CalendarDTO.self, from: data)
+
+        XCTAssertEqual(decoded, dto)
+        XCTAssertEqual(decoded.source_title, "iCloud")
+    }
 
     func testCalendarEventDTOEncoding() throws {
         let dto = CalendarEventDTO(

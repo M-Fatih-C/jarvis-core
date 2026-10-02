@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from core.task_planning.state import TaskProposalStatus
 
 
 class EmailCategory(str, Enum):
@@ -81,5 +83,16 @@ class TaskProposal(BaseModel):
     deadline_confidence: DeadlineConfidence = DeadlineConfidence.NONE
     raw_deadline_text: str | None = None
     proposed_action: str = "Review email"
-    status: Literal["proposed", "dismissed", "approved", "completed"] = "proposed"
+    status: TaskProposalStatus = TaskProposalStatus.PROPOSED
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_status(cls, v: Any) -> TaskProposalStatus:
+        if isinstance(v, TaskProposalStatus):
+            return v
+        if hasattr(v, "value"):
+            return TaskProposalStatus.from_str(str(v.value))
+        if isinstance(v, str):
+            return TaskProposalStatus.from_str(v)
+        return TaskProposalStatus.PROPOSED

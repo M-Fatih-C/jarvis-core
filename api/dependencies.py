@@ -89,6 +89,98 @@ def _get_default_memory_service() -> Any:
     return MemoryService()
 
 
+_custom_approval_store: Optional[ApprovalStore] = None
+_custom_email_storage: Optional[Any] = None
+_custom_bridge_client: Optional[Any] = None
+
+
+def set_custom_approval_store(store: Optional[ApprovalStore]) -> None:
+    """Override default approval store (useful for testing)."""
+    global _custom_approval_store
+    _custom_approval_store = store
+
+
+def set_custom_email_storage(storage: Optional[Any]) -> None:
+    """Override default email storage (useful for testing)."""
+    global _custom_email_storage
+    _custom_email_storage = storage
+
+
+def set_custom_bridge_client(client: Optional[Any]) -> None:
+    """Override default mac bridge client (useful for testing)."""
+    global _custom_bridge_client
+    _custom_bridge_client = client
+
+
+@lru_cache(maxsize=1)
+def get_approval_store() -> ApprovalStore:
+    """Return active ApprovalStore singleton."""
+    global _custom_approval_store
+    if _custom_approval_store is not None:
+        return _custom_approval_store
+    return ApprovalStore()
+
+
+def get_mac_bridge_client() -> Any:
+    """Return active MacBridgeClient singleton."""
+    global _custom_bridge_client
+    if _custom_bridge_client is not None:
+        return _custom_bridge_client
+    return _get_default_bridge_client()
+
+
+@lru_cache(maxsize=1)
+def _get_default_bridge_client() -> Any:
+    from integrations.macos.client import MacBridgeClient
+    return MacBridgeClient()
+
+
+def get_email_storage() -> Any:
+    """Return active EmailStorage singleton."""
+    global _custom_email_storage
+    if _custom_email_storage is not None:
+        return _custom_email_storage
+    return _get_default_email_storage()
+
+
+@lru_cache(maxsize=1)
+def _get_default_email_storage() -> Any:
+    from integrations.gmail.storage import EmailStorage
+    settings = get_settings()
+    return EmailStorage(db_path=settings.email_db_path)
+
+
+def get_calendar_manager() -> Any:
+    """Return active CalendarTargetManager singleton."""
+    from core.task_planning.calendar_manager import CalendarTargetManager
+    return CalendarTargetManager(
+        bridge_client=get_mac_bridge_client(),
+        settings=get_settings(),
+    )
+
+
+def get_task_planner() -> Any:
+    """Return active TaskPlanner singleton."""
+    from core.task_planning.planner import TaskPlanner
+    settings = get_settings()
+    buffer_mins = getattr(settings, "planning_buffer_minutes", 15)
+    return TaskPlanner(
+        bridge_client=get_mac_bridge_client(),
+        buffer_minutes=buffer_mins,
+    )
+
+
+def get_task_approval_service() -> Any:
+    """Return active TaskApprovalService singleton."""
+    from core.task_planning.approval_service import TaskApprovalService
+    return TaskApprovalService(
+        storage=get_email_storage(),
+        policy_engine=get_policy_engine(),
+        approval_store=get_approval_store(),
+        bridge_client=get_mac_bridge_client(),
+    )
+
+
 def get_agent_runtime() -> AgentRuntime:
     """Return AgentRuntime singleton."""
     global _custom_runtime
@@ -104,7 +196,7 @@ def _get_default_runtime() -> AgentRuntime:
         tool_registry=get_tool_registry(),
         policy_engine=get_policy_engine(),
         tool_executor=get_tool_executor(),
-        approval_store=ApprovalStore(),
+        approval_store=get_approval_store(),
         context_builder=ContextBuilder(),
         memory_service=get_memory_service(),
         settings=get_settings(),

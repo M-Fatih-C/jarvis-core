@@ -10,6 +10,7 @@ from api.routes.chat import router as chat_router
 from api.routes.cloud import router as cloud_router
 from api.routes.health import router as health_router
 from api.routes.memory import router as memory_router
+from api.routes.task_planning import router as task_planning_router
 from core.agent.exceptions import JarvisError
 from core.config.settings import get_settings
 from core.logging.setup import get_logger, setup_logging
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(approvals_router)
     app.include_router(memory_router)
     app.include_router(cloud_router)
+    app.include_router(task_planning_router)
 
     # Centralized exception handlers ensuring safe client responses
     @app.exception_handler(JarvisError)

@@ -72,11 +72,15 @@ public final class CalendarService: CalendarServiceProtocol, @unchecked Sendable
         let calendars = eventStore.calendars(for: .event)
         return calendars.map { cal in
             let hex = cal.color.hexString
+            let sourceTitle = cal.source?.title
+            let sourceType = cal.source != nil ? "\(cal.source.sourceType.rawValue)" : nil
             return CalendarDTO(
                 id: cal.calendarIdentifier,
                 title: cal.title,
                 color: hex,
-                allows_modifications: cal.allowsContentModifications
+                allows_modifications: cal.allowsContentModifications,
+                source_title: sourceTitle,
+                source_type: sourceType
             )
         }
     }

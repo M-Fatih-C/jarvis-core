@@ -13,6 +13,13 @@ from uuid import UUID
 
 from core.logging.setup import get_logger
 from core.memory.crypto import KeyProvider, MacKeychainKeyProvider, MemoryEncryptor
+from core.task_planning.schemas import (
+    ActionDestination,
+    ActionType,
+    CalendarCategory,
+    TaskActionProposal,
+)
+from core.task_planning.state import TaskProposalStatus
 from integrations.gmail.models import (
     AttachmentMetadata,
     EmailSyncState,
@@ -136,6 +143,38 @@ class EmailStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_sent_notifications_msg
                     ON sent_notifications(message_id);
+
+                CREATE TABLE IF NOT EXISTS task_actions (
+                    action_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    source_message_id TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    target_destination TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    notes TEXT,
+                    start_time TEXT,
+                    end_time TEXT,
+                    due_date TEXT,
+                    target_calendar_id TEXT,
+                    target_list_id TEXT,
+                    logical_category TEXT,
+                    approval_id TEXT,
+                    action_digest TEXT,
+                    status TEXT NOT NULL,
+                    external_id TEXT,
+                    error_message TEXT,
+                    created_at TEXT NOT NULL,
+                    executed_at TEXT,
+                    FOREIGN KEY(task_id) REFERENCES task_proposals(task_id),
+                    FOREIGN KEY(source_message_id) REFERENCES emails(message_id)
+                );
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_task_actions_idempotency
+                    ON task_actions(source_message_id, task_id, action_type);
+                CREATE INDEX IF NOT EXISTS idx_task_actions_external_id
+                    ON task_actions(external_id);
+                CREATE INDEX IF NOT EXISTS idx_task_actions_task_id
+                    ON task_actions(task_id);
             """)
 
     async def get_sync_state(self, account_email: str) -> EmailSyncState | None:
@@ -419,14 +458,223 @@ class EmailStorage:
         async with self._lock:
             if status:
                 cursor = self._conn.execute(
-                    "SELECT * FROM task_proposals WHERE status = ? ORDER BY created_at DESC",
+                    "SELECT * FROM task_proposals WHERE UPPER(status) = UPPER(?) ORDER BY created_at DESC",
                     (status,),
                 )
             else:
                 cursor = self._conn.execute("SELECT * FROM task_proposals ORDER BY created_at DESC")
 
             rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+            results: list[dict[str, Any]] = []
+            for r in rows:
+                item = dict(r)
+                if item.get("status"):
+                    item["status"] = TaskProposalStatus.from_str(item["status"])
+                results.append(item)
+            return results
+
+    async def get_task_proposal(self, task_id: str | UUID) -> dict[str, Any] | None:
+        """Fetch a single task proposal by task_id."""
+        async with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM task_proposals WHERE task_id = ?",
+                (str(task_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            if item.get("status"):
+                item["status"] = TaskProposalStatus.from_str(item["status"])
+            return item
+
+    async def update_task_proposal_status(
+        self,
+        task_id: str | UUID,
+        status: TaskProposalStatus | str,
+    ) -> None:
+        """Update the lifecycle status of a task proposal."""
+        status_str = status.value if hasattr(status, "value") else str(status)
+        async with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE task_proposals SET status = ? WHERE task_id = ?",
+                    (status_str, str(task_id)),
+                )
+
+    def _row_to_task_action(self, row: sqlite3.Row) -> TaskActionProposal:
+        """Helper to convert sqlite3.Row to TaskActionProposal."""
+        return TaskActionProposal(
+            action_id=UUID(row["action_id"]),
+            task_id=UUID(row["task_id"]),
+            source_message_id=row["source_message_id"],
+            action_type=ActionType(row["action_type"]),
+            target_destination=ActionDestination(row["target_destination"]),
+            title=row["title"],
+            notes=row["notes"],
+            start_time=datetime.fromisoformat(row["start_time"]) if row["start_time"] else None,
+            end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,
+            due_date=datetime.fromisoformat(row["due_date"]) if row["due_date"] else None,
+            target_calendar_id=row["target_calendar_id"],
+            target_list_id=row["target_list_id"],
+            logical_category=CalendarCategory(row["logical_category"]) if row["logical_category"] else CalendarCategory.WORK,
+            approval_id=UUID(row["approval_id"]) if row["approval_id"] else None,
+            action_digest=row["action_digest"],
+            status=TaskProposalStatus.from_str(row["status"]),
+            external_id=row["external_id"],
+            error_message=row["error_message"],
+            created_at=datetime.fromisoformat(row["created_at"]),
+            executed_at=datetime.fromisoformat(row["executed_at"]) if row["executed_at"] else None,
+        )
+
+    async def save_task_action(self, action: TaskActionProposal) -> None:
+        """Insert or replace a task action proposal enforcing idempotency."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        start_str = action.start_time.isoformat() if action.start_time else None
+        end_str = action.end_time.isoformat() if action.end_time else None
+        due_str = action.due_date.isoformat() if action.due_date else None
+        created_str = action.created_at.isoformat() if action.created_at else now_iso
+        executed_str = action.executed_at.isoformat() if action.executed_at else None
+
+        async with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO task_actions (
+                        action_id, task_id, source_message_id, action_type,
+                        target_destination, title, notes, start_time, end_time,
+                        due_date, target_calendar_id, target_list_id, logical_category,
+                        approval_id, action_digest, status, external_id,
+                        error_message, created_at, executed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_message_id, task_id, action_type) DO UPDATE SET
+                        target_destination = excluded.target_destination,
+                        title = excluded.title,
+                        notes = excluded.notes,
+                        start_time = excluded.start_time,
+                        end_time = excluded.end_time,
+                        due_date = excluded.due_date,
+                        target_calendar_id = excluded.target_calendar_id,
+                        target_list_id = excluded.target_list_id,
+                        logical_category = excluded.logical_category,
+                        approval_id = excluded.approval_id,
+                        action_digest = excluded.action_digest,
+                        status = excluded.status,
+                        external_id = excluded.external_id,
+                        error_message = excluded.error_message,
+                        executed_at = excluded.executed_at
+                    """,
+                    (
+                        str(action.action_id),
+                        str(action.task_id),
+                        action.source_message_id,
+                        action.action_type.value,
+                        action.target_destination.value,
+                        action.title,
+                        action.notes,
+                        start_str,
+                        end_str,
+                        due_str,
+                        action.target_calendar_id,
+                        action.target_list_id,
+                        action.logical_category.value,
+                        str(action.approval_id) if action.approval_id else None,
+                        action.action_digest,
+                        action.status.value,
+                        action.external_id,
+                        action.error_message,
+                        created_str,
+                        executed_str,
+                    ),
+                )
+
+    async def get_task_action(self, action_id: str | UUID) -> TaskActionProposal | None:
+        """Fetch a specific task action by ID."""
+        async with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM task_actions WHERE action_id = ?",
+                (str(action_id),),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_task_action(row)
+
+    async def get_task_action_by_idempotency_key(
+        self,
+        source_message_id: str,
+        task_id: str | UUID,
+        action_type: str,
+    ) -> TaskActionProposal | None:
+        """Fetch an action by its unique idempotency composite key."""
+        async with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM task_actions
+                WHERE source_message_id = ? AND task_id = ? AND action_type = ?
+                """,
+                (source_message_id, str(task_id), action_type),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._row_to_task_action(row)
+
+    async def get_task_actions_for_task(self, task_id: str | UUID) -> list[TaskActionProposal]:
+        """Fetch all planned actions associated with a task proposal."""
+        async with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM task_actions WHERE task_id = ? ORDER BY created_at ASC",
+                (str(task_id),),
+            )
+            rows = cursor.fetchall()
+            return [self._row_to_task_action(r) for r in rows]
+
+    async def update_task_action(self, action: TaskActionProposal) -> None:
+        """Update fields of an existing task action proposal."""
+        await self.save_task_action(action)
+
+    async def get_source_email_by_external_id(self, external_id: str) -> dict[str, Any] | None:
+        """Find the original email and task proposal that generated an EventKit event or reminder."""
+        async with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT 
+                    a.action_id, a.task_id, a.source_message_id, a.action_type,
+                    a.title as action_title, a.status as action_status, a.external_id, a.executed_at,
+                    p.title as task_title, p.category as task_category, p.priority as task_priority,
+                    e.subject, e.sender, e.sender_email, e.received_at, e.body_plain, e.body_preview
+                FROM task_actions a
+                JOIN task_proposals p ON a.task_id = p.task_id
+                JOIN emails e ON a.source_message_id = e.message_id
+                WHERE a.external_id = ?
+                """,
+                (external_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            decrypted_preview = await self._decrypt_text(row["body_preview"])
+            decrypted_plain = await self._decrypt_text(row["body_plain"])
+
+            return {
+                "external_id": row["external_id"],
+                "action_id": row["action_id"],
+                "action_type": row["action_type"],
+                "action_title": row["action_title"],
+                "action_status": row["action_status"],
+                "executed_at": row["executed_at"],
+                "task_id": row["task_id"],
+                "task_title": row["task_title"],
+                "task_category": row["task_category"],
+                "source_message_id": row["source_message_id"],
+                "email_subject": row["subject"],
+                "email_sender": row["sender"],
+                "email_sender_email": row["sender_email"],
+                "email_received_at": row["received_at"],
+                "email_preview": decrypted_preview or (decrypted_plain[:200] if decrypted_plain else ""),
+            }
 
     async def is_notification_sent(self, message_id: str) -> bool:
         """Check if notification has already been dispatched for this email."""

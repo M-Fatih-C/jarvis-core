@@ -18,12 +18,23 @@ public struct CalendarDTO: Codable, Equatable, Sendable {
     public let title: String
     public let color: String
     public let allows_modifications: Bool
+    public let source_title: String?
+    public let source_type: String?
 
-    public init(id: String, title: String, color: String, allows_modifications: Bool) {
+    public init(
+        id: String,
+        title: String,
+        color: String,
+        allows_modifications: Bool,
+        source_title: String? = nil,
+        source_type: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.color = color
         self.allows_modifications = allows_modifications
+        self.source_title = source_title
+        self.source_type = source_type
     }
 }
 

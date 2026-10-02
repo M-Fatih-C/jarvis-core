@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     email_sync_schedule_enabled: bool = False  # Explicit opt-in required
     email_sync_times: list[str] = ["09:00", "20:00"]
 
+    # Task Planning Settings (Milestone 4.2)
+    selected_calendar_id: str | None = None
+    default_work_block_duration_minutes: int = 120
+    planning_buffer_minutes: int = 15
+    planning_work_start_hour: int = 9
+    planning_work_end_hour: int = 21
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
