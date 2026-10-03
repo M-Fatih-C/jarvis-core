@@ -53,6 +53,10 @@ public struct SettingsView: View {
                         }
                     }
 
+                    Section("Araba ve ses") {
+                        NavigationLink { CarPlaySetupView() } label: { Label("CarPlay karşılama", systemImage: "car.fill") }
+                    }
+
                     Section(header: Text("Hakkında")) {
                         HStack {
                             Text("Uygulama Sürümü")
@@ -133,5 +137,45 @@ public struct SettingsView: View {
             }
             .navigationTitle("Ayarlar")
         }
+    }
+}
+
+
+private struct CarPlaySetupView: View {
+    @State private var preview = ""
+    @State private var loading = false
+    var body: some View {
+        List {
+            Section {
+                Text("Arabaya bağlandığında ‘Merhaba patron’ ile başlayan tarih, hava durumu, kalan etkinlikler ve bağlantı özeti.")
+                Text("Bir kez iPhone Kestirmeler uygulamasında kurulur. Mac açık ve internete bağlı olmalı; telefonun aynı Wi-Fi’da olması gerekmez.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("1 · Karşılama kestirmesi") {
+                Text("Kestirmeler’de yeni kestirme oluştur; adını ‘JARVIS Karşılama’ yap.")
+                Text("‘Şu Anki Hava Durumunu Al’ eylemini ekle; konumu seç. Sonra bir Metin eyleminde hava durumu Koşullar ve Sıcaklık değişkenlerini birleştir.")
+                Text("JARVIS → ‘Yolculuk özetini al’ eylemini ekle. Hava durumu alanına bu Metin sonucunu bağla.")
+                Text("Sonuna ‘Metni Seslendir’ ekle; okunacak metin olarak Yolculuk özeti sonucunu, dil olarak Türkçe’yi seç.")
+            }
+            Section("2 · CarPlay’e bağla") {
+                Text("Otomasyon → + → CarPlay → Bağlandığında → Hemen Çalıştır. ‘JARVIS Karşılama’ kestirmesini seç.")
+                Text("Kestirmeyi önce telefonunda bir kez çalıştır ve gereken izinleri tamamla. Araç bağlantısı testini park halindeyken yap.")
+                Link("Kestirmeler’i aç", destination: URL(string: "shortcuts://")!)
+            }
+            Section {
+                Button {
+                    loading = true
+                    Task { preview = await DailyBriefingService.build(); loading = false }
+                } label: {
+                    if loading { ProgressView("Takvim ve bağlantı kontrol ediliyor…") }
+                    else { Text("Tarih, takvim ve bağlantıyı dene") }
+                }.disabled(loading)
+                if !preview.isEmpty { Text(preview).textSelection(.enabled) }
+            } header: {
+                Text("Önizleme")
+            } footer: {
+                Text("Bu önizlemede hava durumu yoktur; otomasyonda iPhone sağlar. Karşılama yalnızca bilgi okur. CarPlay otomasyonunu bu ekran kendiliğinden oluşturmaz.")
+            }
+        }.navigationTitle("CarPlay karşılama").navigationBarTitleDisplayMode(.inline)
     }
 }

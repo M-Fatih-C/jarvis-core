@@ -119,7 +119,7 @@ public final class FirebaseAuthService {
             throw AuthError.networkError("Geçersiz Auth uç noktası")
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
@@ -169,7 +169,7 @@ public final class FirebaseAuthService {
             throw AuthError.networkError("Geçersiz token yenileme uç noktası")
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         var form = URLComponents()

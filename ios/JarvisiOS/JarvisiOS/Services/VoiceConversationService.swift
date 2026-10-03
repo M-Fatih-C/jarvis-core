@@ -144,7 +144,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
         finalizing = true
         stopCapture()
         request?.endAudio()
-        // Give Speech its final result; do not drop the last word on button release.
+        // Give Speech its final result; do not drop the last word when finishing a turn.
         finishTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 900_000_000)
             guard !Task.isCancelled else { return }
@@ -171,7 +171,9 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
     func speak(_ text: String) {
         stop()
         guard !text.isEmpty else { return }
-        guard let voice = AVSpeechSynthesisVoice(language: "tr-TR") else {
+        guard let voice = AVSpeechSynthesisVoice.speechVoices()
+            .filter({ $0.language.hasPrefix("tr") })
+            .max(by: { $0.quality.rawValue < $1.quality.rawValue }) else {
             fail("Türkçe ses yüklü değil. iPhone ses ayarlarından yükleyin."); return
         }
         state = .thinking

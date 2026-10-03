@@ -151,6 +151,7 @@ public final class FirebaseCommandQueueService {
         var lastStatus: CommandStatusDTO? = nil
 
         while Date().timeIntervalSince(start) < timeoutSeconds {
+            try Task.checkCancellation()
             let fetched: CloudCommandDTO?
             do {
                 fetched = try await fetchCommandDocument(commandId: commandId, userId: userId, projectId: projectId)
@@ -198,7 +199,7 @@ public final class FirebaseCommandQueueService {
             throw CommandQueueError.networkError("Geçersiz Firestore URL'si")
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
@@ -238,7 +239,7 @@ public final class FirebaseCommandQueueService {
             throw CommandQueueError.networkError("Geçersiz Firestore URL'si")
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.httpMethod = "GET"
         request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
@@ -277,7 +278,7 @@ public final class FirebaseCommandQueueService {
         guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/devices/mac-mini-main") else {
             throw CommandQueueError.invalidResponse
         }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200,
@@ -312,20 +313,42 @@ public final class FirebaseCommandQueueService {
 
     // --- Firestore Field Serialization ---
 
-    private func encodeToFirestoreFields(_ dict: [String: Any]) -> [String: Any] {
-        var fields: [String: Any] = [:]
-        for (key, val) in dict {
-            if let str = val as? String {
-                fields[key] = ["stringValue": str]
-            } else if let intVal = val as? Int {
-                fields[key] = ["integerValue": "\(intVal)"]
-            } else if let boolVal = val as? Bool {
-                fields[key] = ["booleanValue": boolVal]
-            } else if let subDict = val as? [String: Any] {
-                fields[key] = ["mapValue": ["fields": encodeToFirestoreFields(subDict)]]
-            }
+    /// Calendar screens use the same authenticated owner queue as chat. These
+    /// read operations do not enter the chat's pending mutation recovery list.
+    public func readCalendarTool(_ name: String, arguments: [String: Any] = [:], timeout: Double = 45) async throws -> [String: Any] {
+        guard ["calendar.list_calendars", "calendar.list_events"].contains(name),
+              let userId = KeychainHelper.shared.read(key: "firebase_user_uid"),
+              let projectId = KeychainHelper.shared.read(key: "firebase_project_id") else {
+            throw CommandQueueError.unauthenticated
         }
-        return fields
+        let id = UUID().uuidString
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        let payload: [String: Any] = [
+            "id": id, "user_id": userId, "type": "tool_execution", "name": name,
+            "source_device": "iphone_13", "target_device": "mac-mini-main",
+            "payload": ["arguments": arguments, "user_id": userId], "status": "queued",
+            "idempotency_key": id, "created_at": formatter.string(from: now),
+            "available_at": formatter.string(from: now), "expires_at": formatter.string(from: now.addingTimeInterval(180))
+        ]
+        try await writeCommandDocument(commandId: id, userId: userId, projectId: projectId, payload: payload)
+        let result = try await pollCommand(commandId: id, userId: userId, projectId: projectId, timeoutSeconds: timeout) { _, _ in }
+        guard let data = result.result?["data"]?.value as? [String: Any] else { throw CommandQueueError.invalidResponse }
+        return data
+    }
+
+    private func encodeToFirestoreFields(_ dict: [String: Any]) -> [String: Any] {
+        dict.mapValues(encodeFirestoreValue)
+    }
+
+    private func encodeFirestoreValue(_ value: Any) -> [String: Any] {
+        if let value = value as? String { return ["stringValue": value] }
+        if let value = value as? Bool { return ["booleanValue": value] }
+        if let value = value as? Int { return ["integerValue": String(value)] }
+        if let value = value as? Double { return ["doubleValue": value] }
+        if let value = value as? [String: Any] { return ["mapValue": ["fields": encodeToFirestoreFields(value)]] }
+        if let value = value as? [Any] { return ["arrayValue": ["values": value.map(encodeFirestoreValue)]] }
+        return ["nullValue": NSNull()]
     }
 
     private func decodeFromFirestoreFields(_ fields: [String: Any]) -> [String: Any] {

@@ -5,7 +5,7 @@ import Security
 /// Never stores secrets in UserDefaults.
 public final class KeychainHelper {
     public static let shared = KeychainHelper()
-    private let serviceName = "com.mfatihc.jarvis.auth"
+    private let serviceName = "com.mfatihc.jarvis.auth.tests"
 
     private init() {}
 

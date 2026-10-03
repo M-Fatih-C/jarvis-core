@@ -145,39 +145,18 @@ public final class JarvisAPIService {
 
     // MARK: - Calendar & System
     public func fetchCalendars() async throws -> [iOSCalendarInfoDTO] {
-        guard let url = URL(string: "\(baseURLString)/v1/calendar/calendars") else {
-            throw URLError(.badURL)
-        }
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
-                return []
-            }
-            return try JSONDecoder().decode([iOSCalendarInfoDTO].self, from: data)
-        } catch {
-            return []
-        }
+        let result = try await queueService.readCalendarTool("calendar.list_calendars")
+        guard let calendars = result["calendars"] as? [[String: Any]] else { throw CommandQueueError.invalidResponse }
+        return try JSONDecoder().decode([iOSCalendarInfoDTO].self, from: JSONSerialization.data(withJSONObject: calendars))
     }
 
-    public func fetchEvents(calendarId: String?, start: Date, end: Date) async throws -> [iOSCalendarEventDTO] {
+    public func fetchEvents(calendarId: String?, start: Date, end: Date, timeout: Double = 45) async throws -> [iOSCalendarEventDTO] {
         let formatter = ISO8601DateFormatter()
-        let sStr = formatter.string(from: start)
-        let eStr = formatter.string(from: end)
-        var urlString = "\(baseURLString)/v1/calendar/events?start=\(sStr)&end=\(eStr)"
-        if let cal = calendarId {
-            urlString += "&calendar_id=\(cal)"
-        }
-        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
-
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
-                return []
-            }
-            return try JSONDecoder().decode([iOSCalendarEventDTO].self, from: data)
-        } catch {
-            return []
-        }
+        var arguments: [String: Any] = ["start": formatter.string(from: start), "end": formatter.string(from: end), "limit": 200]
+        if let calendarId { arguments["calendar_ids"] = [calendarId] }
+        let result = try await queueService.readCalendarTool("calendar.list_events", arguments: arguments, timeout: timeout)
+        guard let events = result["events"] as? [[String: Any]] else { throw CommandQueueError.invalidResponse }
+        return try JSONDecoder().decode([iOSCalendarEventDTO].self, from: JSONSerialization.data(withJSONObject: events))
     }
 
     public func checkHealth() async throws -> [String: Any] {

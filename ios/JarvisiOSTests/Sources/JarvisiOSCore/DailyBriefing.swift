@@ -1,0 +1,1 @@
+../../../JarvisiOS/JarvisiOS/Models/DailyBriefing.swift

@@ -7,7 +7,8 @@ public struct ChatView: View {
     @StateObject private var health = DeviceStatusViewModel()
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var composerFocused: Bool
-    @State private var microphonePressed = false
+    @State private var showVoice = false
+    @State private var startingVoice = false
     @State private var voiceTurn = false
     @State private var showSignIn = false
 
@@ -97,6 +98,7 @@ public struct ChatView: View {
                 }
             }
             .sheet(isPresented: $showSignIn) { SettingsView() }
+            .sheet(isPresented: $showVoice, onDismiss: stopVoice) { voicePanel }
             .onAppear { connectVoice() }
             .task(id: auth.isAuthenticated) {
                 if auth.isAuthenticated { await viewModel.resumePending(userId: auth.userId, projectId: auth.projectId) }
@@ -115,7 +117,7 @@ public struct ChatView: View {
                 } else if !enabled { voice.stop() }
             }
             .onChange(of: scenePhase) { phase in
-                if phase != .active { stopVoice(); microphonePressed = false }
+                if phase != .active { stopVoice() }
                 else if auth.isAuthenticated { checkPending() }
             }
             .onChange(of: auth.userId) { _ in stopVoice() }
@@ -192,7 +194,7 @@ public struct ChatView: View {
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 26))
             .overlay(RoundedRectangle(cornerRadius: 26).stroke(composerFocused ? Color.mint.opacity(0.45) : Color.white.opacity(0.08)))
             if !composerFocused {
-                Text(voice.conversationMode ? "Eller serbest açık · Sessiz kaldığında gönderilir" : "Konuşmak için mikrofonu basılı tut")
+                Text(voice.conversationMode ? "Eller serbest açık · Sessiz kaldığında gönderilir" : "Konuşmak için mikrofona dokun")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -201,30 +203,69 @@ public struct ChatView: View {
     }
 
     private var microphone: some View {
-        Image(systemName: voice.state == .listening ? "waveform" : "mic.fill")
-            .font(.system(size: 19, weight: .medium))
-            .foregroundStyle(voice.state == .listening ? Color.mint : Color.secondary)
-            .frame(width: 44, height: 44).contentShape(Circle())
-            .accessibilityLabel("Konuşmak için basılı tut")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction {
-                if voice.state == .listening { voice.finishListening() }
-                else if auth.isAuthenticated && !viewModel.isSending { Task { await voice.startListening() } }
-            }
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard !microphonePressed, auth.isAuthenticated, !viewModel.isSending else { return }
-                    microphonePressed = true
-                    composerFocused = false
-                    Task {
-                        await voice.startListening()
-                        if !microphonePressed { voice.stop() }
+        Button {
+            guard auth.isAuthenticated else { showSignIn = true; return }
+            composerFocused = false
+            showVoice = true
+            if !viewModel.isSending { toggleListening() }
+        } label: {
+            Image(systemName: voice.state == .listening ? "waveform" : "mic.fill")
+                .font(.system(size: 19, weight: .medium))
+                .foregroundStyle(voice.state == .listening ? Color.mint : Color.secondary)
+                .frame(width: 44, height: 44)
+        }.accessibilityLabel("Sesli sohbeti aç")
+    }
+
+    private var voicePanel: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 26) {
+                    JarvisAvatarView(state: avatarState, level: voice.level, diameter: 260)
+                        .padding(.top, 20)
+                    Text(voice.state == .listening ? "Seni dinliyorum, patron." : statusTitle)
+                        .font(.title2.weight(.medium)).multilineTextAlignment(.center)
+                    if !voice.transcript.isEmpty {
+                        Text(voice.transcript).font(.body).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center).textSelection(.enabled)
                     }
-                }
-                .onEnded { _ in
-                    microphonePressed = false
-                    voice.finishListening()
-                })
+                    if let error = voice.errorMessage {
+                        Text(error).font(.subheadline).foregroundStyle(.orange)
+                    }
+                    Button(action: toggleListening) {
+                        Label(voice.state == .listening ? "Bitir ve gönder" : "Konuşmaya başla",
+                              systemImage: voice.state == .listening ? "stop.fill" : "mic.fill")
+                            .font(.headline).frame(maxWidth: .infinity, minHeight: 60)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.cyan).foregroundStyle(.black)
+                    .disabled(viewModel.isSending || startingVoice)
+                    Toggle("Eller serbest sohbet", isOn: $voice.conversationMode).tint(.cyan)
+                    Text(voice.conversationMode
+                         ? "Sessiz kaldığında mesajın gönderilir. Yanıt bitince yeniden dinler."
+                         : "Başlatmak için dokun. Konuşman bitince tekrar dokunarak gönder.")
+                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if viewModel.messages.last?.status == .waitingApproval {
+                        Button("Onayı sohbette incele") { showVoice = false }
+                            .buttonStyle(.bordered).frame(minHeight: 44)
+                    }
+                }.padding(24)
+            }
+            .background(Color(red: 0.015, green: 0.035, blue: 0.055))
+            .navigationTitle("J.A.R.V.I.S.").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                Button("Kapat") { showVoice = false }
+            } }
+        }.preferredColorScheme(.dark)
+    }
+
+    private func toggleListening() {
+        guard !viewModel.isSending, !startingVoice else { return }
+        if voice.state == .listening { voice.finishListening(); return }
+        startingVoice = true
+        Task {
+            await voice.startListening()
+            startingVoice = false
+            if !showVoice { voice.stop() }
+        }
     }
 
     private func sendText() {
@@ -239,7 +280,7 @@ public struct ChatView: View {
             await viewModel.resumePending(userId: auth.userId, projectId: auth.projectId)
         }
     }
-    private func stopVoice() { voice.conversationMode = false; voice.stop() }
+    private func stopVoice() { voiceTurn = false; voice.conversationMode = false; voice.stop() }
     private func connectVoice() {
         voice.onTurn = { text in
             voiceTurn = true
