@@ -150,8 +150,16 @@ class CreateReminderTool(JarvisTool):
                 params["alarm"] = validated.alarm.isoformat()
 
             res = await self._bridge.call("reminders.create", params)
-            logger.info("reminders_create_success", reminder_id=res.get("id"))
-            return ToolResult(tool_call_id="", success=True, data={"status": "created", "reminder": res})
+            reminder_id = res.get("id")
+            if not reminder_id:
+                return ToolResult(tool_call_id="", success=False, error="EventKit returned no ID; verify before retrying")
+            verified = await self._bridge.call("reminders.get", {"reminder_id": reminder_id})
+            due_matches = validated.due_at is None or (isinstance(verified.get("due_at"), str)
+                and datetime.fromisoformat(verified["due_at"]) == validated.due_at)
+            if verified.get("id") != reminder_id or verified.get("title") != validated.title or not due_matches:
+                return ToolResult(tool_call_id="", success=False, error="Reminder read-back mismatch; verify before retrying")
+            logger.info("reminders_create_success", reminder_id=reminder_id)
+            return ToolResult(tool_call_id="", success=True, data={"status": "created", "reminder": verified})
         except PermissionDeniedBridgeError as p_err:
             return ToolResult(tool_call_id="", success=False, error=f"PERMISSION_DENIED: {p_err}")
         except MacBridgeError as exc:

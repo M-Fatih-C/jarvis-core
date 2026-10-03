@@ -94,7 +94,7 @@ async def test_full_api_workflow_proposal_plan_approve_and_trace(test_setup) -> 
     # Mock bridge responses for create and read-back
     mock_bridge.call.side_effect = [
         {"id": "ek_rem_api_99", "status": "created"},
-        {"reminders": [{"id": "ek_rem_api_99", "title": "Proje Raporunu Teslim Et (Güncellendi)", "completed": False}]},
+        {"id": "ek_rem_api_99", "title": "Proje Raporunu Teslim Et (Güncellendi)", "due_at": "2026-10-08T17:00:00+00:00"},
     ]
 
     # 1. List proposals

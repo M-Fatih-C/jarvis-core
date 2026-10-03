@@ -4,143 +4,46 @@ import Foundation
 public final class JarvisAPIService {
     public static let shared = JarvisAPIService()
 
-    private let session = URLSession.shared
     private let queueService = FirebaseCommandQueueService.shared
-
-    private var baseURLString: String {
-        return UserDefaults.standard.string(forKey: "jarvis_server_url") ?? "http://localhost:8765"
-    }
-
     private init() {}
 
-    // MARK: - Direct Chat API (Local Mac Fallback / Dev Proxy)
-    public func sendChatMessage(prompt: String) async throws -> String {
-        guard let url = URL(string: "\(baseURLString)/v1/chat") else {
-            throw URLError(.badURL)
-        }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["message": prompt]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await session.data(for: req)
-        guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
-            throw NSError(domain: "JarvisAPI", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to send message to Jarvis."])
-        }
-
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            // Python API exposes {run_id: ..., status: ..., message: ..., approval: ...}
-            if let reply = json["message"] as? String {
-                return reply
-            } else if let reply = json["response"] as? String {
-                return reply
-            }
-        }
-
-        return "Yanıt işlendi."
+    private func decode<T: Decodable>(_ type: T.Type, _ value: Any) throws -> T {
+        try JSONDecoder().decode(type, from: JSONSerialization.data(withJSONObject: value))
     }
 
-    // MARK: - Email Summaries
     public func fetchEmails() async throws -> [iOSEmailItemDTO] {
-        guard let url = URL(string: "\(baseURLString)/v1/emails/summaries") else {
-            throw URLError(.badURL)
-        }
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
-                return []
-            }
-            return (try? JSONDecoder().decode([iOSEmailItemDTO].self, from: data)) ?? []
-        } catch {
-            return []
-        }
+        let result = try await queueService.screenRequest("client.emails")
+        guard let items = result["items"] else { throw CommandQueueError.invalidResponse }
+        return try decode([iOSEmailItemDTO].self, items)
     }
 
-    // MARK: - Task Proposals & Actions
-    public func fetchProposals(status: String? = nil) async throws -> [TaskProposalDTO] {
-        var urlString = "\(baseURLString)/v1/tasks/proposals"
-        if let s = status {
-            urlString += "?status=\(s)"
-        }
-        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
-
-        do {
-            let (data, response) = try await session.data(from: url)
-            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
-                return []
-            }
-            return try JSONDecoder().decode([TaskProposalDTO].self, from: data)
-        } catch {
-            return []
-        }
+    public func fetchProposalDetails() async throws -> [TaskProposalDetailDTO] {
+        let result = try await queueService.screenRequest("client.proposals")
+        guard let items = result["details"] else { throw CommandQueueError.invalidResponse }
+        return try decode([TaskProposalDetailDTO].self, items)
     }
 
     public func fetchProposalDetail(taskId: String) async throws -> TaskProposalDetailDTO {
-        guard let url = URL(string: "\(baseURLString)/v1/tasks/proposals/\(taskId)") else {
-            throw URLError(.badURL)
-        }
-        let (data, _) = try await session.data(from: url)
-        return try JSONDecoder().decode(TaskProposalDetailDTO.self, from: data)
+        try decode(TaskProposalDetailDTO.self, await queueService.screenRequest("client.proposal", arguments: ["task_id": taskId]))
     }
-
     public func requestApproval(actionId: String) async throws -> [String: Any] {
-        guard let url = URL(string: "\(baseURLString)/v1/tasks/actions/\(actionId)/request-approval") else {
-            throw URLError(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        let (data, _) = try await session.data(for: req)
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        try await queueService.screenRequest("client.request_approval", arguments: ["action_id": actionId])
     }
-
-    public func approveAction(actionId: String) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/v1/tasks/actions/\(actionId)/approve") else {
-            throw URLError(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        let (data, _) = try await session.data(for: req)
-        return try JSONDecoder().decode(TaskActionDTO.self, from: data)
+    public func approveAction(_ action: TaskActionDTO, commandId: String) async throws -> TaskActionDTO {
+        guard let approval = action.approval_id, let digest = action.action_digest else { throw CommandQueueError.invalidResponse }
+        return try decode(TaskActionDTO.self, await queueService.approveTaskAction(actionId: action.id,
+            approvalId: approval, digest: digest, commandId: commandId))
     }
-
     public func dismissAction(actionId: String) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/v1/tasks/actions/\(actionId)/dismiss") else {
-            throw URLError(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        let (data, _) = try await session.data(for: req)
-        return try JSONDecoder().decode(TaskActionDTO.self, from: data)
+        try decode(TaskActionDTO.self, await queueService.screenRequest("client.dismiss", arguments: ["action_id": actionId]))
     }
-
     public func planReminder(taskId: String, due: String? = nil) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/v1/tasks/proposals/\(taskId)/plan-reminder") else {
-            throw URLError(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = due != nil ? ["custom_due_date": due!] : [:]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, _) = try await session.data(for: req)
-        return try JSONDecoder().decode(TaskActionDTO.self, from: data)
+        var arguments: [String: Any] = ["task_id": taskId]
+        if let due { arguments["due"] = due }
+        return try decode(TaskActionDTO.self, await queueService.screenRequest("client.plan_reminder", arguments: arguments))
     }
-
     public func planWorkBlock(taskId: String, duration: Int = 120) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/v1/tasks/proposals/\(taskId)/plan-work-block") else {
-            throw URLError(.badURL)
-        }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["duration_minutes": duration]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, _) = try await session.data(for: req)
-        return try JSONDecoder().decode(TaskActionDTO.self, from: data)
+        try decode(TaskActionDTO.self, await queueService.screenRequest("client.plan_work_block", arguments: ["task_id": taskId, "duration": duration]))
     }
 
     // MARK: - Calendar & System
@@ -160,8 +63,8 @@ public final class JarvisAPIService {
     }
 
     public func checkHealth() async throws -> [String: Any] {
-        guard let uid = KeychainHelper.shared.read(key: "firebase_user_uid"),
-              let project = KeychainHelper.shared.read(key: "firebase_project_id") else {
+        guard let uid = FirebaseAuthService.shared.currentUserID,
+              let project = FirebaseAuthService.shared.currentProjectID else {
             throw CommandQueueError.unauthenticated
         }
         return try await queueService.fetchDeviceStatus(userId: uid, projectId: project)

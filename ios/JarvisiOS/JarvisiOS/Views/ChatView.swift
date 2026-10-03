@@ -20,7 +20,7 @@ public struct ChatView: View {
         return viewModel.isSending ? .thinking : voice.state
     }
     private var canSend: Bool {
-        auth.isAuthenticated && !viewModel.isSending && voice.state != .listening &&
+        auth.isAuthenticated && !viewModel.isSending && !viewModel.isRestoring && voice.state != .listening &&
         !viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     private var statusTitle: String {
@@ -28,6 +28,7 @@ public struct ChatView: View {
         if health.isChecking && !health.isConnected { return "Bağlanıyor…" }
         if !health.isConnected { return "Mac bağlantısı bekleniyor" }
         if viewModel.messages.last?.status == .waitingApproval { return "Onayın bekleniyor" }
+        if viewModel.isRestoring { return "Geçmiş yükleniyor…" }
         if viewModel.isSending { return "Yanıt hazırlanıyor…" }
         return voice.state == .idle ? "Hazır" : voice.state.title
     }
@@ -213,7 +214,7 @@ public struct ChatView: View {
                 .font(.system(size: 19, weight: .medium))
                 .foregroundStyle(voice.state == .listening ? Color.mint : Color.secondary)
                 .frame(width: 44, height: 44)
-        }.accessibilityLabel("Sesli sohbeti aç")
+        }.disabled(viewModel.isRestoring).accessibilityLabel("Sesli sohbeti aç")
     }
 
     private var voicePanel: some View {

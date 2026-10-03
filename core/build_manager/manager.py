@@ -223,7 +223,7 @@ class BuildManager:
                     target_identifier=self.state.target_device_id,
                     target_udid=self.state.target_device_udid,
                 )
-                destination = f"id={dev.udid}" if dev and dev.udid else "generic/platform=iOS"
+                destination = f"id={dev.udid}" if dev and dev.udid and dev.reachable else "generic/platform=iOS"
 
                 build_res = await self.builder.build(
                     device_destination=destination,

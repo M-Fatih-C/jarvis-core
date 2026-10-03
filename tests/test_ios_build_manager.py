@@ -378,3 +378,16 @@ async def test_renewal_requires_verified_install(tmp_path, install_after, verifi
     result = await mgr.renew(install_after=install_after)
     assert result['renewed'] is expected
     assert bool(mgr.state.last_successful_renewal) is expected
+
+@pytest.mark.asyncio
+async def test_build_uses_generic_destination_when_paired_phone_is_offline(tmp_path):
+    manager = BuildManager(state_file=str(tmp_path / 'state.json'))
+    manager._cross_lock = MagicMock()
+    manager._cross_lock.acquire.return_value = True
+    manager.device_monitor.get_target_device = AsyncMock(return_value=DeviceInfo(
+        identifier='synthetic-id', udid='synthetic-udid', name='Phone', reachable=False))
+    manager.builder.build = AsyncMock(return_value=BuildResult(success=True))
+    manager.notifier.notify = AsyncMock()
+    result = await manager.build()
+    assert result.success
+    assert manager.builder.build.await_args.kwargs['device_destination'] == 'generic/platform=iOS'

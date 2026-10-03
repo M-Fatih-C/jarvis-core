@@ -48,6 +48,7 @@ class AgentRuntime:
         context_builder: ContextBuilder | None = None,
         memory_service: Any = None,
         settings: Settings | None = None,
+        conversation_store: Any = None,
     ) -> None:
         self._llm = llm_adapter
         self._tools = tool_registry
@@ -57,6 +58,7 @@ class AgentRuntime:
         self._context_builder = context_builder or ContextBuilder()
         self._memory = memory_service
         self._settings = settings or get_settings()
+        self._conversation_store = conversation_store
 
         # In-memory storage for active runs and conversation histories
         self._runs: dict[UUID, AgentRun] = {}
@@ -144,13 +146,17 @@ class AgentRuntime:
                 memory_context=memory_context,
             )
             if user_id and conversation_id:
-                history = self._conversations.get((user_id, conversation_id), [])
+                key = (user_id, conversation_id)
+                if key not in self._conversations and self._conversation_store:
+                    self._conversations[key] = await self._conversation_store.load(*key)
+                history = self._conversations.get(key, [])
                 messages[1:1] = [m.model_copy(deep=True) for m in history[-20:]]
             self._contexts[run_id] = messages
 
             # 2. Start cognitive loop
             res = await self._step_loop(run_id)
 
+            await self._persist_conversation(res)
             # 3. Post-run memory extraction if completed
             if self._memory is not None and res.state == AgentState.COMPLETED:
                 try:
@@ -422,6 +428,7 @@ class AgentRuntime:
             except Exception as m_err:
                 logger.warning("memory_extraction_failed", error=str(m_err))
 
+        await self._persist_conversation(completed_run)
         return completed_run
 
     async def resume_rejection(self, approval_id: UUID, reason: str | None = None, user_id: str | None = None) -> AgentRun:
@@ -460,8 +467,19 @@ class AgentRuntime:
         ))
         self._transition(run_id, AgentState.COMPLETED)
 
+        await self._persist_conversation(agent_run)
         logger.info("agent_run_completed_after_rejection", run_id=str(run_id))
         return agent_run
+
+    async def _persist_conversation(self, run):
+        if self._conversation_store and run.state == AgentState.COMPLETED and run.user_id and run.conversation_id:
+            key = (run.user_id, run.conversation_id)
+            try:
+                await self._conversation_store.save(*key, self._conversations.get(key, []))
+            except Exception as exc:
+                logger.error("conversation_persistence_failed", error_type=type(exc).__name__)
+                # A finished operation stays finished; a storage failure never retries its writes.
+                run.final_response = (run.final_response or "") + "\nSohbet bağlamı Mac’e kaydedilemedi."
 
     def _transition(self, run_id: UUID, next_state: AgentState) -> None:
         """Perform verified state transition on both state machine and run model."""

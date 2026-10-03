@@ -49,14 +49,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from integrations.firebase.command_repository import FirestoreCommandRepository
         from integrations.firebase.device_repository import FirestoreDeviceRepository
         client_provider = FirestoreClientProvider(settings)
-        worker = CommandWorker(FirestoreCommandRepository(client_provider, settings=settings), get_agent_runtime(), settings=settings)
+        from core.cloud.client_requests import ClientRequests
+        from api.dependencies import get_email_storage, get_task_planner, get_calendar_manager, get_task_approval_service, get_memory_service
+        screens = ClientRequests(owner=settings.jarvis_uid, storage=get_email_storage(), planner=get_task_planner(),
+            calendar_manager=get_calendar_manager(), approval_service=get_task_approval_service(),
+            memory=get_memory_service(), mode=settings.default_agent_mode)
+        worker = CommandWorker(FirestoreCommandRepository(client_provider, settings=settings), get_agent_runtime(),
+            settings=settings, client_requests=screens)
         async def device_health():
             from api.dependencies import get_mac_bridge_client
             from integrations.macos.health import check_mac_agent_health
             native = await check_mac_agent_health(get_mac_bridge_client())
+            from integrations.gmail.auth import KeychainTokenStore
+            from core.build_manager.manager import BuildManager
+            gmail_configured = False
+            try:
+                gmail_configured = KeychainTokenStore().load_tokens("default") is not None
+            except Exception:
+                pass
+            build = BuildManager().state
+            monitoring = await get_email_storage().get_monitoring_start()
             return {"model_ready": await get_llm_adapter().health(), "model": settings.model_id,
                     "mac_agent_connected": native.get("connected", False), "worker_running": worker._running,
-                    "gmail_schedule_enabled": settings.email_sync_schedule_enabled}
+                    "calendar_permission": native.get("calendar_permission", "unknown"),
+                    "reminders_permission": native.get("reminders_permission", "unknown"),
+                    "gmail_authorized": gmail_configured, "gmail_new_only": monitoring is not None,
+                    "gmail_schedule_enabled": bool(scheduler and scheduler._running and scheduler.enabled),
+                    "gmail_last_success": scheduler.last_run.isoformat() if scheduler and scheduler.last_run else None,
+                    "signature_auto_renew": build.auto_renew_enabled,
+                    "signature_expires": build.last_provisioning_info.expiration_date.isoformat()
+                        if build.last_provisioning_info and build.last_provisioning_info.expiration_date else None}
         device_service = DeviceService(FirestoreDeviceRepository(client_provider, settings=settings), settings=settings, health_provider=device_health)
         await worker.start()
         await device_service.start()

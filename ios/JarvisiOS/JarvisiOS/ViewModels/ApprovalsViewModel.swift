@@ -19,25 +19,16 @@ public final class ApprovalsViewModel: ObservableObject {
         return count
     }
 
-    public init() {
-        Task {
-            await loadData()
-        }
-    }
+    public init() {}
 
     public func loadData() async {
+        guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
         do {
-            let fetched = try await apiService.fetchProposals()
-            proposals = fetched
-
-            // Fetch details for each proposal to load planned actions
-            for p in fetched {
-                if let detail = try? await apiService.fetchProposalDetail(taskId: p.task_id) {
-                    detailedTasks[p.task_id] = detail
-                }
-            }
+            let details = try await apiService.fetchProposalDetails()
+            proposals = details.map(\.task)
+            detailedTasks = Dictionary(uniqueKeysWithValues: details.map { ($0.task.task_id, $0) })
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -45,9 +36,16 @@ public final class ApprovalsViewModel: ObservableObject {
     }
 
     public func approveAction(actionId: String, taskId: String) async {
+        guard processingActionId == nil,
+              let action = detailedTasks[taskId]?.actions.first(where: { $0.id == actionId }),
+              let approval = action.approval_id else { return }
         processingActionId = actionId
+        let auth = FirebaseAuthService.shared
+        let key = "jarvis_task_approval.\(auth.currentProjectID ?? "").\(auth.currentUserID ?? "").\(approval)"
+        let commandId = UserDefaults.standard.string(forKey: key) ?? UUID().uuidString
+        UserDefaults.standard.set(commandId, forKey: key)
         do {
-            _ = try await apiService.approveAction(actionId: actionId)
+            _ = try await apiService.approveAction(action, commandId: commandId)
             // Reload details
             if let detail = try? await apiService.fetchProposalDetail(taskId: taskId) {
                 detailedTasks[taskId] = detail

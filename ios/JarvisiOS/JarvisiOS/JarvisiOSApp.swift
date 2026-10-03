@@ -6,7 +6,7 @@ struct JarvisiOSApp: App {
     init() { JarvisShortcuts.updateAppShortcutParameters() }
     var body: some Scene {
         WindowGroup {
-            MainTabView()
+            SessionGateView()
                 .environmentObject(auth)
                 .preferredColorScheme(.dark)
         }

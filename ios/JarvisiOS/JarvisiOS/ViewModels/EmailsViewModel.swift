@@ -17,13 +17,10 @@ public final class EmailsViewModel: ObservableObject {
         return emails.filter { ($0.category ?? "").lowercased() == selectedCategory.lowercased() }
     }
 
-    public init() {
-        Task {
-            await loadEmails()
-        }
-    }
+    public init() {}
 
     public func loadEmails() async {
+        guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
         do {

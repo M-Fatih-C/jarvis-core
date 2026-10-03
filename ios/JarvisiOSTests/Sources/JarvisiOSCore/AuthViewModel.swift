@@ -1,0 +1,1 @@
+../../../JarvisiOS/JarvisiOS/ViewModels/AuthViewModel.swift

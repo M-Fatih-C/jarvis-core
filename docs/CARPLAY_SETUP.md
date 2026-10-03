@@ -2,6 +2,14 @@
 
 Build 16, Kestirmeler için **Yolculuk özetini al** eylemini ekler. Uygulama içindeki **Ayarlar → CarPlay karşılama** ekranında aynı kurulum ve canlı takvim/bağlantı önizlemesi bulunur.
 
+## Face ID ile gizlilik (yapı 18)
+
+Uygulama arka plana geçince Keychain oturumu kilitlenir. Kestirme kilidi aşmaz:
+kilitliyken yalnızca tarih, Kestirmeler’in sağladığı hava durumu ve erişilememe
+bilgisi okunur. Özel takvim/bağlantı özeti, Face ID ile açılmış uygulamanın CarPlay
+ayarlarındaki önizlemesinden kullanılabilir. Kilitli telefonda özel gündemi tamamen
+otomatik okuma bu sürümde desteklenmez; ayrı bir güvenli yetkilendirme akışı gerekir.
+
 ## Bir kez kurulum
 
 1. JARVIS’i aç, hesabına giriş yap. Mac açık ve internete bağlı olsun. Telefonun aynı Wi-Fi’da olması gerekmez.

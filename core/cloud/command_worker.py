@@ -40,12 +40,14 @@ class CommandWorker:
         tool_executor: ToolExecutor | None = None,
         settings: Settings | None = None,
         task_approval_service: Any = None,
+        client_requests: Any = None,
     ) -> None:
         self._repo = command_repo
         self._runtime = runtime
         self._executor = tool_executor or runtime._executor
         self._settings = settings or get_settings()
         self._task_approval_service = task_approval_service
+        self._client_requests = client_requests
         self._poll_task: asyncio.Task[None] | None = None
         self._running = False
 
@@ -209,7 +211,21 @@ class CommandWorker:
                 or cmd.payload.get("user_id", cmd.user_id) != cmd.user_id
             ):
                 raise PermissionError("Authenticated command owner mismatch")
-            if cmd.type == "tool_execution":
+            if cmd.type == "tool_execution" and cmd.name.startswith("client."):
+                if self._client_requests is None:
+                    raise ValueError("Phone screen service unavailable")
+                data = await self._client_requests.handle(cmd.name, cmd.payload.get("arguments", {}), cmd.user_id)
+                cmd.status = CommandStatus.COMPLETED
+                cmd.result = {"data": data}
+                cmd.error = None
+            elif cmd.type == "approval_response" and cmd.payload.get("task_action_id"):
+                if self._client_requests is None:
+                    raise ValueError("Phone approval service unavailable")
+                data = await self._client_requests.approve(cmd.payload, cmd.user_id)
+                cmd.status = CommandStatus.COMPLETED
+                cmd.result = {"data": data}
+                cmd.error = None
+            elif cmd.type == "tool_execution":
                 success, data, error = await self._verify_and_execute_tool(cmd)
                 if success:
                     cmd.status = CommandStatus.COMPLETED

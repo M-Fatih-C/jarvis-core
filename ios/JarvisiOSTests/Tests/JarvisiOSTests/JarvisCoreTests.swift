@@ -2,14 +2,15 @@ import XCTest
 @testable import JarvisiOSCore
 
 final class JarvisCoreTests: XCTestCase {
+    private let testKeychain = KeychainHelper(serviceName: "com.mfatihc.jarvis.auth.tests")
 
     override func setUp() {
         super.setUp()
-        KeychainHelper.shared.clearAll()
+        testKeychain.clearAll()
     }
 
     override func tearDown() {
-        KeychainHelper.shared.clearAll()
+        testKeychain.clearAll()
         super.tearDown()
     }
 
@@ -20,26 +21,26 @@ final class JarvisCoreTests: XCTestCase {
         let testToken = "firebase_jwt_token_sample_abc123"
 
         // Save to Keychain
-        let uidSaved = KeychainHelper.shared.save(key: "auth_uid", value: testUID)
-        let tokenSaved = KeychainHelper.shared.save(key: "auth_id_token", value: testToken)
+        let uidSaved = testKeychain.save(key: "auth_uid", value: testUID)
+        let tokenSaved = testKeychain.save(key: "auth_id_token", value: testToken)
         XCTAssertTrue(uidSaved, "UID must be successfully saved to Keychain")
         XCTAssertTrue(tokenSaved, "Token must be successfully saved to Keychain")
 
         // Read back from Keychain
-        let readUID = KeychainHelper.shared.read(key: "auth_uid")
-        let readToken = KeychainHelper.shared.read(key: "auth_id_token")
+        let readUID = testKeychain.read(key: "auth_uid")
+        let readToken = testKeychain.read(key: "auth_id_token")
         XCTAssertEqual(readUID, testUID)
         XCTAssertEqual(readToken, testToken)
 
         // Verify delete / signOut
-        let deleted = KeychainHelper.shared.delete(key: "auth_id_token")
+        let deleted = testKeychain.delete(key: "auth_id_token")
         XCTAssertTrue(deleted)
-        XCTAssertNil(KeychainHelper.shared.read(key: "auth_id_token"))
-        XCTAssertEqual(KeychainHelper.shared.read(key: "auth_uid"), testUID)
+        XCTAssertNil(testKeychain.read(key: "auth_id_token"))
+        XCTAssertEqual(testKeychain.read(key: "auth_uid"), testUID)
 
         // Clear all
-        KeychainHelper.shared.clearAll()
-        XCTAssertNil(KeychainHelper.shared.read(key: "auth_uid"))
+        testKeychain.clearAll()
+        XCTAssertNil(testKeychain.read(key: "auth_uid"))
     }
 
     // MARK: - 2. Response Decoding Tests

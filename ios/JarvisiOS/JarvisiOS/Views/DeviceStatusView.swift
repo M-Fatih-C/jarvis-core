@@ -2,133 +2,40 @@ import SwiftUI
 
 public struct DeviceStatusView: View {
     @StateObject private var viewModel = DeviceStatusViewModel()
-
     public init() {}
-
     public var body: some View {
-        NavigationStack {
-            List {
-                Section(header: Text("Yerel Yapay Zeka Sunucusu")) {
-                    HStack {
-                        Image(systemName: "macmini.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(.blue)
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(viewModel.hostInfo)
-                                .font(.headline)
-                            HStack {
-                                Circle()
-                                    .fill(viewModel.isConnected ? Color.green : Color.red)
-                                    .frame(width: 8, height: 8)
-                                Text(viewModel.isConnected ? "Çevrimiçi (Aktif)" : "Bağlantı Kesildi")
-                                    .font(.caption)
-                                    .foregroundColor(viewModel.isConnected ? .green : .red)
-                            }
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 4)
+        List {
+            Section {
+                Label(viewModel.isConnected ? "Mac mini bağlı" : "Mac mini bağlantısı bekleniyor",
+                      systemImage: viewModel.isConnected ? "checkmark.circle.fill" : "wifi.slash")
+                    .foregroundStyle(viewModel.isConnected ? .green : .orange)
+                if let date = viewModel.lastHeartbeat {
+                    LabeledContent("Son haber", value: date.formatted(date: .omitted, time: .standard))
                 }
-
-                Section(header: Text("Model & Çalışma Motoru")) {
-                    HStack {
-                        Text("Çalışan Model")
-                        Spacer()
-                        Text(viewModel.modelName)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Yürütme Mimarisi")
-                        Spacer()
-                        Text("Apple Silicon MLX 4-bit")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Çalışma Modu")
-                        Spacer()
-                        Text(viewModel.activeMode)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Gecikme Süresi")
-                        Spacer()
-                        if let ms = viewModel.latencyMs {
-                            Text("\(ms) ms")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("Ölçülemedi")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                Section(header: Text("Kanal & İletişim Güvenliği")) {
-                    HStack {
-                        Text("İstemci - Sunucu Kanalı")
-                        Spacer()
-                        Text("Güvenli Firebase bağlantısı")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Yerel IPC Köprüsü")
-                        Spacer()
-                        Text("Mac üzerinde yerel bağlantı")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("Güvenlik & Politika")
-                        Spacer()
-                        Text("Değişiklikler onayınızı gerektirir")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                Section {
-                    Button(action: {
-                        Task {
-                            await viewModel.checkStatus()
-                        }
-                    }) {
-                        if viewModel.isChecking {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Spacer()
-                            }
-                        } else {
-                            HStack {
-                                Spacer()
-                                Label("Bağlantıyı Yeniden Kontrol Et", systemImage: "arrow.clockwise")
-                                Spacer()
-                            }
-                        }
-                    }
-                }
+                if let error = viewModel.errorMessage { Text(error).font(.caption).foregroundStyle(.orange) }
             }
-            .task {
-                while !Task.isCancelled {
-                    await viewModel.checkStatus()
-                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+            Section("Bağlantılar") {
+                ForEach(viewModel.services.keys.sorted(), id: \.self) { name in
+                    LabeledContent(name, value: viewModel.services[name] ?? "Bilinmiyor")
                 }
+                LabeledContent("Güvenli giriş", value: "Face ID / cihaz parolası")
+                LabeledContent("Ses", value: "iPhone Türkçe sesi")
             }
-            .navigationTitle("Sunucu Durumu")
-            .refreshable {
-                await viewModel.checkStatus()
+            Section {
+                Text("Mac mini açık ve internete bağlı olmalı. Geçici bağlantı kesintileri hesabını kapatmaz. Takvim ve hatırlatıcı değişiklikleri onayınla kaydedilir.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                Button("Bağlantıyı yenile", systemImage: "arrow.clockwise") { Task { await viewModel.checkStatus() } }
+                    .disabled(viewModel.isChecking)
             }
         }
+        .navigationTitle("Bağlantılar")
+        .overlay { if viewModel.isChecking && viewModel.lastHeartbeat == nil { ProgressView() } }
+        .task {
+            while !Task.isCancelled {
+                await viewModel.checkStatus()
+                do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { break }
+            }
+        }
+        .refreshable { await viewModel.checkStatus() }
     }
 }

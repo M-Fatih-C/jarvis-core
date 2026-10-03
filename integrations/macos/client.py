@@ -30,6 +30,7 @@ ALLOWED_METHODS = frozenset({
     "calendar.delete_event",
     "reminders.list_lists",
     "reminders.list",
+    "reminders.get",
     "reminders.create",
     "reminders.update",
     "reminders.complete",

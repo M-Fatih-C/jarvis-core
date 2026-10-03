@@ -31,8 +31,9 @@ struct JarvisShortcuts: AppShortcutsProvider {
 enum DailyBriefingService {
     static func build(weather: String = "") async -> String {
         let now = Date()
-        guard KeychainHelper.shared.read(key: "firebase_user_uid") != nil else {
-            return "Merhaba patron. JARVIS hesabına giriş yapılmamış. Telefonunda JARVIS Ayarlar bölümünden giriş yap."
+        guard FirebaseAuthService.shared.isUnlocked else {
+            return DailyBriefing.text(now: now, events: nil, health: nil, weather: weather)
+                + " Güvenli oturum kilitli. Özel programını JARVIS’i Face ID ile açtıktan sonra uygulamada dinleyebilirsin."
         }
         let health = try? await JarvisAPIService.shared.checkHealth()
         let snapshot = health.map { BriefingHealth(device: $0, now: Date()) }

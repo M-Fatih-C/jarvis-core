@@ -76,6 +76,7 @@ class GmailProcessingPipeline:
             try:
                 # AI Analysis
                 analysis = await self.analyzer.analyze(email)
+                await self.storage.save_analysis(email.message_id, analysis)
                 result.analyses.append(analysis)
                 result.analyzed_count += 1
 

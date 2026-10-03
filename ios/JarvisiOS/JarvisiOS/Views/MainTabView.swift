@@ -1,7 +1,6 @@
 import SwiftUI
 
 public struct MainTabView: View {
-    @StateObject private var approvalsViewModel = ApprovalsViewModel()
 
     public init() {}
 
@@ -16,7 +15,6 @@ public struct MainTabView: View {
                 .tabItem {
                     Label("Onaylar", systemImage: "checkmark.seal.fill")
                 }
-                .badge(approvalsViewModel.pendingApprovalsCount)
 
             CalendarScheduleView()
                 .tabItem {
@@ -26,11 +24,6 @@ public struct MainTabView: View {
             EmailsView()
                 .tabItem {
                     Label("E-postalar", systemImage: "envelope.fill")
-                }
-
-            DeviceStatusView()
-                .tabItem {
-                    Label("Mac mini", systemImage: "macmini.fill")
                 }
 
             SettingsView()

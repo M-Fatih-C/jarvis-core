@@ -195,6 +195,10 @@ def get_agent_runtime() -> AgentRuntime:
 
 @lru_cache(maxsize=1)
 def _get_default_runtime() -> AgentRuntime:
+    from pathlib import Path
+    from core.agent.conversation_store import ConversationStore
+    settings = get_settings()
+    history = ConversationStore(Path(settings.memory_db_path).expanduser().with_name("conversations.db")) if settings.environment == "production" else None
     return AgentRuntime(
         llm_adapter=get_llm_adapter(),
         tool_registry=get_tool_registry(),
@@ -203,7 +207,8 @@ def _get_default_runtime() -> AgentRuntime:
         approval_store=get_approval_store(),
         context_builder=ContextBuilder(),
         memory_service=get_memory_service(),
-        settings=get_settings(),
+        settings=settings,
+        conversation_store=history,
     )
 
 @lru_cache(maxsize=1)

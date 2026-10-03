@@ -1,146 +1,136 @@
 import Foundation
 import SwiftUI
+import LocalAuthentication
 
-/// Manages real Firebase Authentication state, monitoring, and secure session persistence via Keychain.
-/// Does not silently authenticate as a predefined account.
 @MainActor
 public final class AuthViewModel: ObservableObject {
-    @Published public var isAuthenticated: Bool = false
-    @Published public var userId: String = ""
-    @Published public var userEmail: String = ""
-    @Published public var projectId: String = ""
-    @Published public var apiKey: String = ""
-    @Published public var isLoading: Bool = false
-    @Published public var errorMessage: String? = nil
+    @Published public private(set) var isAuthenticated = false
+    @Published public private(set) var userId = ""
+    @Published public private(set) var userEmail = ""
+    @Published public private(set) var projectId = ""
+    @Published public private(set) var hasSavedSession = false
+    @Published public private(set) var isLoading = false
+    @Published public var errorMessage: String?
+    @Published public private(set) var connectionNotice: String?
+    private let service: FirebaseAuthService
+    private let authenticator: LocalAuthenticating
+    private var autoAttempted = false
+    private var epoch = UUID()
+    private var validation: Task<Void, Never>?
 
-    private let keychain = KeychainHelper.shared
-    private let keyUID = "firebase_user_uid"
-    private let keyEmail = "firebase_user_email"
-    private let keyToken = "firebase_id_token"
-    private let keyRefreshToken = "firebase_refresh_token"
-    private let keyProject = "firebase_project_id"
-    private let keyApiKey = "firebase_api_key"
-
-    private var bundledProject: String {
-        guard let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
-              let dict = NSDictionary(contentsOfFile: path) as? [String: Any] else { return "" }
-        return dict["PROJECT_ID"] as? String ?? ""
-    }
-
-    private var configuredProject: String {
-        let stored = keychain.read(key: keyProject) ?? ""
-        return stored.isEmpty || stored == "jarvis-local-dev" ? bundledProject : stored
-    }
-
-    public init() {
-        restoreSession()
-    }
-
-    /// Restore previous authenticated session from secure Keychain storage.
-    public func restoreSession() {
-        if let storedUID = keychain.read(key: keyUID), !storedUID.isEmpty,
-           let storedToken = keychain.read(key: keyToken), !storedToken.isEmpty {
-            self.userId = storedUID
-            self.userEmail = keychain.read(key: keyEmail) ?? ""
-            self.projectId = configuredProject
-            self.apiKey = keychain.read(key: keyApiKey) ?? ""
-            self.isAuthenticated = false
-
-            // Check if token can be refreshed automatically
-            if let refresh = keychain.read(key: keyRefreshToken), !refresh.isEmpty {
-                Task {
-                    await self.refreshCurrentToken(refreshToken: refresh)
-                }
-            }
-        } else {
-            self.isAuthenticated = false
-            self.userId = ""
-            self.userEmail = ""
-            self.apiKey = keychain.read(key: keyApiKey) ?? ""
-            self.projectId = configuredProject
+    public convenience init() { self.init(service: .shared, authenticator: DeviceOwnerAuthenticator()) }
+    init(service: FirebaseAuthService, authenticator: LocalAuthenticating) {
+        self.service = service; self.authenticator = authenticator
+        hasSavedSession = service.hasSavedSession
+        service.onInvalidSession = { [weak self] in
+            self?.resetPresentation()
+            self?.hasSavedSession = service.hasSavedSession
+            self?.errorMessage = "Oturumun artık geçerli değil. Lütfen tekrar giriş yap."
         }
     }
 
-    /// Authenticate with Firebase using email and password.
-    public func signIn(email: String, pass: String, createAccount: Bool = false) async -> Bool {
-        guard !email.trimmingCharacters(in: .whitespaces).isEmpty, !pass.isEmpty else {
-            self.errorMessage = "E-posta ve parola boş bırakılamaz."
-            return false
-        }
+    func becameActive() async {
+        guard !isLoading, !isAuthenticated, hasSavedSession, !autoAttempted else { return }
+        autoAttempted = true
+        await unlock()
+    }
 
-        self.isLoading = true
-        self.errorMessage = nil
-
+    func unlock() async {
+        guard !isLoading else { return }
+        isLoading = true; errorMessage = nil
+        let operation = epoch
+        defer { if operation == epoch { isLoading = false } }
         do {
-            let session = try await FirebaseAuthService.shared.authenticate(
-                email: email.trimmingCharacters(in: .whitespaces),
-                password: pass,
-                apiKey: self.apiKey.isEmpty ? nil : self.apiKey,
-                createAccount: createAccount
-            )
-            // Save to secure Keychain storage
-            keychain.save(key: keyUID, value: session.uid)
-            keychain.save(key: keyEmail, value: session.email)
-            keychain.save(key: keyToken, value: session.idToken)
-            if let ref = session.refreshToken {
-                keychain.save(key: keyRefreshToken, value: ref)
-            }
-            keychain.save(key: keyProject, value: self.projectId)
-            if !self.apiKey.isEmpty {
-                keychain.save(key: keyApiKey, value: self.apiKey)
-            }
+            let context = try await authenticator.authorize()
+            guard operation == epoch else { context.invalidate(); return }
+            try service.unlock(context: context)
+            revealSession()
+        } catch {
+            guard operation == epoch else { return }
+            errorMessage = localMessage(error)
+        }
+    }
 
-            self.userId = session.uid
-            self.userEmail = session.email
-            self.isAuthenticated = true
-            self.isLoading = false
+    public func signIn(email: String, pass: String, createAccount: Bool = false) async -> Bool {
+        guard !isLoading, !email.trimmingCharacters(in: .whitespaces).isEmpty, !pass.isEmpty else { return false }
+        isLoading = true; errorMessage = nil
+        let operation = epoch
+        defer { if operation == epoch { isLoading = false } }
+        do {
+            // First authorize secure storage; an interrupted Face ID prompt must not
+            // submit credentials or replace the user's existing account.
+            let context = try await authenticator.authorize()
+            guard operation == epoch else { context.invalidate(); return false }
+            let auth = try await service.authenticate(email: email.trimmingCharacters(in: .whitespaces), password: pass)
+            guard operation == epoch else { context.invalidate(); return false }
+            try service.accept(auth, context: context)
+            revealSession()
             return true
         } catch {
-            self.isLoading = false
-            self.errorMessage = error.localizedDescription
-            self.isAuthenticated = false
+            guard operation == epoch else { return false }
+            errorMessage = localMessage(error)
             return false
         }
     }
 
-    /// Refresh token automatically
-    public func refreshCurrentToken(refreshToken: String) async {
-        do {
-            _ = try await FirebaseAuthService.shared.validIDToken()
-            self.isAuthenticated = true
-        } catch {
-            // Fail closed: If token is invalidated or revoked, sign out
-            self.isAuthenticated = false
-            self.errorMessage = error.localizedDescription
+    private func revealSession() {
+        userId = service.currentUserID ?? ""
+        userEmail = service.currentEmail
+        projectId = service.currentProjectID ?? ""
+        hasSavedSession = service.hasSavedSession
+        isAuthenticated = service.isUnlocked
+        connectionNotice = nil
+        let operation = epoch
+        validation = Task {
+            do { try await service.validateAccount() }
+            catch {
+                guard operation == epoch, isAuthenticated else { return }
+                connectionNotice = "Hesap bağlantısı şu anda doğrulanamıyor. İnternete bağlandığında tekrar denenecek."
+            }
         }
     }
 
-    /// Sign out and purge all authentication tokens from Keychain.
+    func enteredBackground() {
+        epoch = UUID()
+        validation?.cancel(); validation = nil
+        authenticator.cancel()
+        service.lock()
+        resetPresentation()
+        hasSavedSession = service.hasSavedSession
+        autoAttempted = false
+    }
+
     public func signOut() {
-        keychain.delete(key: keyUID)
-        keychain.delete(key: keyEmail)
-        keychain.delete(key: keyToken)
-        keychain.delete(key: keyRefreshToken)
-        self.isAuthenticated = false
-        self.userId = ""
-        self.userEmail = ""
-        self.errorMessage = nil
-    }
-
-    public func updateProjectId(_ newId: String) {
-        let trimmed = newId.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        self.projectId = trimmed
-        keychain.save(key: keyProject, value: trimmed)
-    }
-
-    public func updateApiKey(_ newKey: String) {
-        let trimmed = newKey.trimmingCharacters(in: .whitespaces)
-        self.apiKey = trimmed
-        if trimmed.isEmpty {
-            keychain.delete(key: keyApiKey)
-        } else {
-            keychain.save(key: keyApiKey, value: trimmed)
+        epoch = UUID()
+        validation?.cancel(); validation = nil
+        authenticator.cancel()
+        resetPresentation()
+        do {
+            try service.signOut()
+            hasSavedSession = false
+            errorMessage = nil
+        } catch {
+            hasSavedSession = service.hasSavedSession
+            errorMessage = "Oturum kilitlendi ancak kayıtlı bilgiler temizlenemedi. Tekrar dene."
         }
+        autoAttempted = true
+    }
+
+    private func resetPresentation() {
+        isAuthenticated = false; isLoading = false
+        userId = ""; userEmail = ""; projectId = ""
+        connectionNotice = nil
+    }
+
+    private func localMessage(_ error: Error) -> String {
+        if let error = error as? LAError {
+            switch error.code {
+            case .userCancel, .appCancel, .systemCancel: return "Oturum kilitli. Hazır olduğunda tekrar deneyebilirsin."
+            case .passcodeNotSet: return "Güvenli giriş için iPhone Ayarlar bölümünden bir cihaz parolası belirle."
+            case .biometryLockout: return "Face ID geçici olarak kilitli. Cihaz parolanla tekrar dene."
+            default: return "Kimliğin doğrulanamadı. Face ID veya cihaz parolasıyla tekrar dene."
+            }
+        }
+        return error.localizedDescription
     }
 }

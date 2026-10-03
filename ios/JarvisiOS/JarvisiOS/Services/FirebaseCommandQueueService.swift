@@ -39,20 +39,21 @@ public final class FirebaseCommandQueueService {
 
     private init() {}
 
+    private func authorizedSession(userId: String, projectId: String) throws -> UUID {
+        let auth = FirebaseAuthService.shared
+        guard auth.isUnlocked, auth.currentUserID == userId, auth.currentProjectID == projectId else { throw AuthError.locked }
+        return auth.sessionIdentifier
+    }
+    private func ensureActive(_ epoch: UUID) throws {
+        let auth = FirebaseAuthService.shared
+        guard auth.isUnlocked, auth.sessionIdentifier == epoch else { throw AuthError.locked }
+    }
+
     /// Base Firestore REST URL for a document.
     private func firestoreDocumentURL(projectId: String, path: String) -> URL? {
         let cleanProject = projectId.isEmpty ? "jarvis-local-dev" : projectId
         let str = "https://firestore.googleapis.com/v1/projects/\(cleanProject)/databases/(default)/documents/\(path)"
         return URL(string: str)
-    }
-
-    /// Retrieve the current authenticated ID token from Keychain.
-    private func getAuthToken() throws -> String {
-        guard let token = KeychainHelper.shared.read(key: "firebase_id_token"),
-              !token.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw CommandQueueError.unauthenticated
-        }
-        return token.trimmingCharacters(in: .whitespaces)
     }
 
     /// Submit a new user chat message into the Firestore Command Queue.
@@ -155,6 +156,10 @@ public final class FirebaseCommandQueueService {
             let fetched: CloudCommandDTO?
             do {
                 fetched = try await fetchCommandDocument(commandId: commandId, userId: userId, projectId: projectId)
+            } catch AuthError.locked {
+                throw AuthError.locked
+            } catch AuthError.unauthenticated {
+                throw AuthError.unauthenticated
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -193,6 +198,7 @@ public final class FirebaseCommandQueueService {
         projectId: String,
         payload: [String: Any]
     ) async throws {
+        let epoch = try authorizedSession(userId: userId, projectId: projectId)
         let authToken = try await FirebaseAuthService.shared.validIDToken()
 
         guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/commands?documentId=\(commandId)") else {
@@ -208,23 +214,22 @@ public final class FirebaseCommandQueueService {
         let body: [String: Any] = ["fields": firestoreFields]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (_, response) = try await session.data(for: request)
         } catch {
             // Fail closed: Network error is reported immediately and never disguised as success
             throw CommandQueueError.networkError("Firestore bağlantı hatası: \(error.localizedDescription)")
         }
 
+        try ensureActive(epoch)
         guard let httpRes = response as? HTTPURLResponse else {
             throw CommandQueueError.networkError("Sunucudan geçerli bir HTTP yanıtı alınamadı.")
         }
 
         if httpRes.statusCode == 409 { return } // Existing immutable command: resume polling.
         guard httpRes.statusCode == 200 || httpRes.statusCode == 201 else {
-            let errorBody = String(data: data, encoding: .utf8) ?? "Bilinmeyen hata"
-            throw CommandQueueError.networkError("Firestore komut yazma reddedildi (HTTP \(httpRes.statusCode)): \(errorBody)")
+            throw CommandQueueError.networkError("İstek iletilemedi (HTTP \(httpRes.statusCode)). Bağlantıyı tekrar kontrol et.")
         }
     }
 
@@ -233,6 +238,7 @@ public final class FirebaseCommandQueueService {
         userId: String,
         projectId: String
     ) async throws -> CloudCommandDTO? {
+        let epoch = try authorizedSession(userId: userId, projectId: projectId)
         let authToken = try await FirebaseAuthService.shared.validIDToken()
 
         guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/commands/\(commandId)") else {
@@ -251,6 +257,7 @@ public final class FirebaseCommandQueueService {
             throw CommandQueueError.networkError("Firestore okuma bağlantı hatası: \(error.localizedDescription)")
         }
 
+        try ensureActive(epoch)
         guard let httpRes = response as? HTTPURLResponse else {
             throw CommandQueueError.networkError("Sunucudan geçerli bir HTTP yanıtı alınamadı.")
         }
@@ -273,7 +280,36 @@ public final class FirebaseCommandQueueService {
         return try JSONDecoder().decode(CloudCommandDTO.self, from: jsonData)
     }
 
+    public func recentChatCommands(userId: String, projectId: String, conversationId: String) async throws -> [CloudCommandDTO] {
+        let epoch = try authorizedSession(userId: userId, projectId: projectId)
+        let token = try await FirebaseAuthService.shared.validIDToken()
+        guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/commands:runQuery") else {
+            throw CommandQueueError.invalidResponse
+        }
+        // Query the collection under its parent document, using the single-field index.
+        let parentURL = url.absoluteString.replacingOccurrences(of: "/commands:runQuery", with: ":runQuery")
+        var request = URLRequest(url: URL(string: parentURL)!, timeoutInterval: 15)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["structuredQuery": [
+            "from": [["collectionId": "commands"]],
+            "where": ["fieldFilter": ["field": ["fieldPath": "payload.conversation_id"], "op": "EQUAL",
+                "value": ["stringValue": conversationId]]], "limit": 200
+        ]])
+        let (data, response) = try await session.data(for: request)
+        try ensureActive(epoch)
+        guard (response as? HTTPURLResponse)?.statusCode == 200,
+              let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { throw CommandQueueError.invalidResponse }
+        return try rows.compactMap { row -> CloudCommandDTO? in
+            guard let doc = row["document"] as? [String: Any], let fields = doc["fields"] as? [String: Any] else { return nil }
+            let decoded = decodeFromFirestoreFields(fields)
+            return try JSONDecoder().decode(CloudCommandDTO.self, from: JSONSerialization.data(withJSONObject: decoded))
+        }.sorted { $0.created_at < $1.created_at }
+    }
+
     public func fetchDeviceStatus(userId: String, projectId: String) async throws -> [String: Any] {
+        let epoch = try authorizedSession(userId: userId, projectId: projectId)
         let token = try await FirebaseAuthService.shared.validIDToken()
         guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/devices/mac-mini-main") else {
             throw CommandQueueError.invalidResponse
@@ -281,6 +317,7 @@ public final class FirebaseCommandQueueService {
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
+        try ensureActive(epoch)
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let fields = json["fields"] as? [String: Any] else {
@@ -316,9 +353,13 @@ public final class FirebaseCommandQueueService {
     /// Calendar screens use the same authenticated owner queue as chat. These
     /// read operations do not enter the chat's pending mutation recovery list.
     public func readCalendarTool(_ name: String, arguments: [String: Any] = [:], timeout: Double = 45) async throws -> [String: Any] {
-        guard ["calendar.list_calendars", "calendar.list_events"].contains(name),
-              let userId = KeychainHelper.shared.read(key: "firebase_user_uid"),
-              let projectId = KeychainHelper.shared.read(key: "firebase_project_id") else {
+        guard ["calendar.list_calendars", "calendar.list_events"].contains(name) else { throw CommandQueueError.invalidResponse }
+        return try await screenRequest(name, arguments: arguments, timeout: timeout)
+    }
+
+    public func screenRequest(_ name: String, arguments: [String: Any] = [:], timeout: Double = 45) async throws -> [String: Any] {
+        guard let userId = FirebaseAuthService.shared.currentUserID,
+              let projectId = FirebaseAuthService.shared.currentProjectID else {
             throw CommandQueueError.unauthenticated
         }
         let id = UUID().uuidString
@@ -334,6 +375,23 @@ public final class FirebaseCommandQueueService {
         try await writeCommandDocument(commandId: id, userId: userId, projectId: projectId, payload: payload)
         let result = try await pollCommand(commandId: id, userId: userId, projectId: projectId, timeoutSeconds: timeout) { _, _ in }
         guard let data = result.result?["data"]?.value as? [String: Any] else { throw CommandQueueError.invalidResponse }
+        return data
+    }
+
+    public func approveTaskAction(actionId: String, approvalId: String, digest: String, commandId: String) async throws -> [String: Any] {
+        guard let userId = FirebaseAuthService.shared.currentUserID,
+              let projectId = FirebaseAuthService.shared.currentProjectID else { throw AuthError.locked }
+        let now = Date()
+        let formatter = ISO8601DateFormatter()
+        let document: [String: Any] = ["id": commandId, "user_id": userId, "type": "approval_response", "name": "task_action_approval",
+            "source_device": "iphone_13", "target_device": "mac-mini-main", "status": "queued", "idempotency_key": commandId,
+            "created_at": formatter.string(from: now), "available_at": formatter.string(from: now),
+            "expires_at": formatter.string(from: now.addingTimeInterval(300)),
+            "payload": ["user_id": userId, "task_action_id": actionId, "approval_id": approvalId,
+                "action_digest": digest, "decision": "approved"]]
+        try await writeCommandDocument(commandId: commandId, userId: userId, projectId: projectId, payload: document)
+        let command = try await pollCommand(commandId: commandId, userId: userId, projectId: projectId) { _, _ in }
+        guard let data = command.result?["data"]?.value as? [String: Any] else { throw CommandQueueError.invalidResponse }
         return data
     }
 

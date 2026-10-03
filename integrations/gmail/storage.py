@@ -734,6 +734,36 @@ class EmailStorage:
         except Exception:
             pass
 
+    async def save_analysis(self, message_id: str, analysis) -> None:
+        # Persist the actual local-model summary; screen reads never trigger analysis or notifications.
+        values = analysis.model_dump(mode="json")
+        summary = analysis.summary
+        if self.encryption_enabled:
+            key = await self.key_provider.get_or_create_memory_key()
+            summary = json.dumps(MemoryEncryptor.encrypt(summary, key))
+        async with self._lock:
+            with self._conn:
+                self._conn.execute("""INSERT OR REPLACE INTO email_analyses
+                    (message_id, category, importance, requires_response, contains_task, has_deadline,
+                     has_meeting, security_or_payment, summary, proposed_action, analyzed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (message_id, values["category"], values["importance"], analysis.requires_response,
+                     analysis.contains_task, analysis.has_deadline, analysis.has_meeting, analysis.security_or_payment,
+                     summary, values["proposed_action"], datetime.now(timezone.utc).isoformat()))
+
+    async def list_email_summaries(self, limit: int = 50) -> list[dict[str, Any]]:
+        async with self._lock:
+            rows = self._conn.execute("""SELECT e.message_id, e.thread_id, e.sender, e.sender_email,
+                e.recipient, e.subject, e.received_at, a.summary, a.category, a.importance
+                FROM emails e JOIN email_analyses a ON e.message_id=a.message_id
+                ORDER BY e.received_at DESC LIMIT ?""", (max(1, min(limit, 100)),)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["body_preview"] = await self._decrypt_text(item.pop("summary"))
+            result.append(item)
+        return result
+
     async def pending_analysis_ids(self, limit: int = 100) -> list[str]:
         async with self._lock:
             return [r[0] for r in self._conn.execute(

@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "jarvis_hologram_logo.png",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "version": 1,
+    "author": "xcode"
+  }
+}

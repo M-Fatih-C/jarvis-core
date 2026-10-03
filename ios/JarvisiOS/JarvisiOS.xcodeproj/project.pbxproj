@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1031 /* ChatHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2031 /* ChatHistoryStore.swift */; };
 		1001 /* JarvisiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2001 /* JarvisiOSApp.swift */; };
 		1002 /* CloudCommandDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2002 /* CloudCommandDTO.swift */; };
 		1003 /* TaskProposalDTO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2003 /* TaskProposalDTO.swift */; };
@@ -33,9 +34,13 @@
 		1025 /* JarvisAvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2025 /* JarvisAvatarView.swift */; };
 		1026 /* DailyBriefing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2026 /* DailyBriefing.swift */; };
 		1027 /* DailyBriefingIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2027 /* DailyBriefingIntent.swift */; };
+		1028 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 2028 /* Assets.xcassets */; };
+		1029 /* SessionVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2029 /* SessionVault.swift */; };
+		1030 /* SessionGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2030 /* SessionGateView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		2031 /* ChatHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
 		0001 /* JarvisiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JarvisiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2001 /* JarvisiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisiOSApp.swift; sourceTree = "<group>"; };
 		2002 /* CloudCommandDTO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudCommandDTO.swift; sourceTree = "<group>"; };
@@ -64,6 +69,9 @@
 		2025 /* JarvisAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisAvatarView.swift; sourceTree = "<group>"; };
 		2026 /* DailyBriefing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyBriefing.swift; sourceTree = "<group>"; };
 		2027 /* DailyBriefingIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DailyBriefingIntent.swift; sourceTree = "<group>"; };
+		2028 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		2029 /* SessionVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionVault.swift; sourceTree = "<group>"; };
+		2030 /* SessionGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionGateView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXShellScriptBuildPhase section */
@@ -106,6 +114,7 @@
 				5005 /* Services */,
 				5006 /* ViewModels */,
 				5007 /* Views */,
+				2028 /* Assets.xcassets */,
 				2020 /* Info.plist */,
 			);
 			path = JarvisiOS;
@@ -140,6 +149,8 @@
 				2023 /* FirebaseCommandQueueService.swift */,
 				2024 /* VoiceConversationService.swift */,
 				2027 /* DailyBriefingIntent.swift */,
+				2029 /* SessionVault.swift */,
+				2031 /* ChatHistoryStore.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -168,6 +179,7 @@
 				2017 /* DeviceStatusView.swift */,
 				2018 /* SettingsView.swift */,
 				2019 /* MainTabView.swift */,
+				2030 /* SessionGateView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -232,6 +244,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1028 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -246,6 +259,9 @@
 				1002 /* CloudCommandDTO.swift in Sources */,
 				1003 /* TaskProposalDTO.swift in Sources */,
 				1004 /* CalendarEventDTO.swift in Sources */,
+				1030 /* SessionGateView.swift in Sources */,
+				1031 /* ChatHistoryStore.swift in Sources */,
+				1029 /* SessionVault.swift in Sources */,
 				1027 /* DailyBriefingIntent.swift in Sources */,
 				1026 /* DailyBriefing.swift in Sources */,
 				1005 /* EmailAnalysisDTO.swift in Sources */,

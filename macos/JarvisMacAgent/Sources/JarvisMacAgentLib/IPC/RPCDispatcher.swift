@@ -227,6 +227,16 @@ public final class RPCDispatcher: Sendable {
                 let jsonObj = try JSONSerialization.jsonObject(with: encoded) as? [Sendable] ?? []
                 return .success(id: request.id, result: AnyCodable(["reminders": jsonObj]))
 
+            case "reminders.get":
+                try checkRemindersPermission()
+                guard let id = request.params["reminder_id"]?.value as? String else {
+                    return .failure(id: request.id, code: "INVALID_ARGUMENT", message: "Missing reminder_id")
+                }
+                let reminder = try reminderService.getReminder(id: id)
+                let data = try JSONEncoder().encode(reminder)
+                let object = try JSONSerialization.jsonObject(with: data) as? [String: Sendable] ?? [:]
+                return .success(id: request.id, result: AnyCodable(object))
+
             case "reminders.create":
                 try checkRemindersPermission()
                 guard let title = request.params["title"]?.value as? String, !title.isEmpty else {

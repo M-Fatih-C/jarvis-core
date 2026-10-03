@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from core.agent.approval_store import ApprovalStore
-from core.agent.exceptions import JarvisError
+from core.agent.exceptions import ApprovalIntegrityError, JarvisError
 from core.logging.setup import get_logger
 from core.models.agent import AgentMode
 from core.models.approval import ApprovalRequest
@@ -111,11 +111,15 @@ class TaskApprovalService:
         self,
         action: TaskActionProposal,
         agent_run_id: UUID | None = None,
+        user_id: str | None = None,
     ) -> tuple[TaskActionProposal, ApprovalRequest]:
         """Evaluate action under PolicyEngine R2 and register for human approval.
 
         Enforces idempotency: rejects duplicate action proposals for same email/task/action_type.
         """
+        previous_approval = self.approval_store.get(action.approval_id) if action.approval_id else None
+        if action.external_id or action.status == TaskProposalStatus.EXECUTING or (previous_approval and previous_approval.consumed_at):
+            raise DuplicateActionError("İşlem daha önce yürütüldü veya sonucu belirsiz. Mevcut kaydı kontrol edin.")
         # 1. Idempotency Check
         existing = await self.storage.get_task_action_by_idempotency_key(
             source_message_id=action.source_message_id,
@@ -153,6 +157,7 @@ class TaskApprovalService:
         approval_req = self.approval_store.create(
             agent_run_id=run_id,
             tool_call=tool_call,
+            user_id=user_id,
         )
 
         # 5. Transition to WAITING_APPROVAL
@@ -178,14 +183,14 @@ class TaskApprovalService:
         )
         return updated_action, approval_req
 
-    async def approve_and_execute_action(self, action_id: UUID | str) -> TaskActionProposal:
+    async def approve_and_execute_action(self, action_id: UUID | str, *, user_id: str | None = None, action_digest: str | None = None, require_client_digest: bool = False) -> TaskActionProposal:
         """Approve, verify digest, execute via JarvisMacAgent, and perform read-back verification."""
         action = await self.storage.get_task_action(action_id)
         if not action:
             raise JarvisError(f"TaskActionProposal '{action_id}' not found.")
 
         # Idempotency guard: prevent duplicate execution
-        if action.status == TaskProposalStatus.EXECUTED:
+        if action.external_id or action.status in (TaskProposalStatus.EXECUTED, TaskProposalStatus.EXECUTING):
             raise DuplicateActionError(
                 f"İşlem '{action.title}' zaten yürütülmüş (Durum: EXECUTED, External ID: {action.external_id})."
             )
@@ -198,11 +203,13 @@ class TaskApprovalService:
 
         # 1. Approve if still pending
         app_req = self.approval_store.get(action.approval_id)
+        if require_client_digest and (not app_req or not action_digest or action_digest != app_req.action_digest or app_req.user_id != user_id):
+            raise ApprovalIntegrityError("Approval identity or action digest mismatch")
         if app_req and app_req.status.value == "pending":
-            self.approval_store.approve(action.approval_id, current_tool_call=tool_call)
+            self.approval_store.approve(action.approval_id, current_tool_call=tool_call, user_id=user_id)
 
         # 2. Consume approval (validates one-time use and action digest integrity)
-        self.approval_store.consume(action.approval_id, tool_call=tool_call)
+        self.approval_store.consume(action.approval_id, tool_call=tool_call, user_id=user_id)
 
         # 3. Transition to EXECUTING
         s1 = transition_task_status(action.status, TaskProposalStatus.APPROVED)
@@ -241,7 +248,7 @@ class TaskApprovalService:
             except PlanningConflictError:
                 raise
             except Exception as check_exc:
-                logger.warning("conflict_pre_check_bridge_warning", error=str(check_exc))
+                raise PlanningConflictError("Takvim çakışması kontrol edilemedi; kayıt oluşturulmadı.") from check_exc
 
         # 5. Execute Mutation via Bridge
         try:
@@ -249,13 +256,15 @@ class TaskApprovalService:
         except Exception as exec_err:
             action = action.model_copy(
                 update={
-                    "status": TaskProposalStatus.FAILED,
-                    "error_message": str(exec_err),
+                    # The bridge may have saved before its reply was lost. Keep a
+                    # durable executing marker; re-approval must not replay the write.
+                    "status": TaskProposalStatus.EXECUTING,
+                    "error_message": "Kayıt sonucu doğrulanamadı. Tekrar oluşturmadan önce Takvim/Hatırlatıcılar uygulamasını kontrol edin.",
                 }
             )
             await self.storage.save_task_action(action)
-            await self.storage.update_task_proposal_status(action.task_id, TaskProposalStatus.FAILED)
-            raise JarvisError(f"EventKit mutation failed: {exec_err}")
+            await self.storage.update_task_proposal_status(action.task_id, TaskProposalStatus.EXECUTING)
+            raise JarvisError("EventKit sonucu belirsiz; aynı işlem otomatik tekrarlanmaz") from exec_err
 
         # Extract created external identifier
         record_id = ""
@@ -267,11 +276,20 @@ class TaskApprovalService:
             elif "reminder" in call_res and isinstance(call_res["reminder"], dict):
                 record_id = call_res["reminder"].get("id", "")
 
-        if not record_id:
-            record_id = f"ek_{action.action_id.hex[:16]}"
-
-        # 6. Read-back Verification
-        await self._verify_read_back(action=action, external_id=record_id)
+        # Persist the actual ID before read-back so a failure cannot cause a duplicate.
+        action = action.model_copy(update={"external_id": record_id or None})
+        await self.storage.save_task_action(action)
+        try:
+            if not record_id:
+                raise ReadBackVerificationError("EventKit returned no record ID; verify before retrying")
+            await self._verify_read_back(action=action, external_id=record_id)
+        except ReadBackVerificationError as exc:
+            # Missing ID is also an uncertain mutation; retain its durable marker.
+            failed_status = TaskProposalStatus.FAILED if record_id else TaskProposalStatus.EXECUTING
+            action = action.model_copy(update={"status": failed_status, "error_message": str(exc)})
+            await self.storage.save_task_action(action)
+            await self.storage.update_task_proposal_status(action.task_id, failed_status)
+            raise
 
         # 7. Transition to EXECUTED
         now_dt = datetime.now(timezone.utc)
@@ -297,36 +315,34 @@ class TaskApprovalService:
         return final_action
 
     async def _verify_read_back(self, action: TaskActionProposal, external_id: str) -> None:
-        """Verify created EventKit record by reading it back from the system."""
+        """Require the exact EventKit ID, title and dates; missing/failed reads fail closed."""
         try:
             if action.target_destination == ActionDestination.APPLE_CALENDAR:
                 res = await self.bridge_client.call("calendar.get_event", {"event_id": external_id})
-                # If mock bridge returns a success dict or event data, confirm existence
-                if not res:
-                    raise ReadBackVerificationError(f"Calendar event '{external_id}' not found on read-back.")
-            elif action.target_destination == ActionDestination.APPLE_REMINDERS:
-                # Query reminders list to confirm newly created item exists
-                res = await self.bridge_client.call("reminders.list", {"limit": 20})
-                reminders = res.get("reminders", []) if isinstance(res, dict) else []
-                # Check if reminder ID or title is present
-                found = any(r.get("id") == external_id or r.get("title") == action.title for r in reminders)
-                if not found and not reminders:
-                    # If bridge returned empty list in mock without error, allow fallback if creation succeeded
-                    pass
-                elif not found and reminders:
-                    raise ReadBackVerificationError(f"Reminder '{action.title}' not found in Apple Reminders on read-back.")
+                dates = (("start", action.start_time), ("end", action.end_time))
+            else:
+                res = await self.bridge_client.call("reminders.get", {"reminder_id": external_id})
+                dates = (("due_at", action.due_date),)
+            if not isinstance(res, dict) or res.get("id") != external_id or res.get("title") != action.title:
+                raise ReadBackVerificationError("Record not found in Apple Reminders/Calendar with matching ID and title")
+            for field, expected in dates:
+                if expected and (not isinstance(res.get(field), str) or datetime.fromisoformat(res[field]) != expected):
+                    raise ReadBackVerificationError("EventKit record date does not match the approved action")
         except ReadBackVerificationError:
             raise
         except Exception as exc:
-            # If bridge call fails with method not implemented in mock or similar, log warning
-            logger.warning("read_back_verification_check_warning", error=str(exc))
+            raise ReadBackVerificationError("EventKit read-back unavailable; verify before retrying") from exc
 
-    async def dismiss_action(self, action_id: UUID | str) -> TaskActionProposal:
+    async def dismiss_action(self, action_id: UUID | str, *, user_id: str | None = None) -> TaskActionProposal:
         """Dismiss a planned action and update parent proposal if appropriate."""
         action = await self.storage.get_task_action(action_id)
         if not action:
             raise JarvisError(f"TaskActionProposal '{action_id}' not found.")
 
+        if action.approval_id:
+            req = self.approval_store.get(action.approval_id)
+            if req and req.status.value == "pending":
+                self.approval_store.reject(action.approval_id, user_id=user_id)
         next_status = transition_task_status(action.status, TaskProposalStatus.DISMISSED)
         updated = action.model_copy(update={"status": next_status})
         await self.storage.save_task_action(updated)

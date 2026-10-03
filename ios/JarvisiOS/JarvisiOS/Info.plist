@@ -19,7 +19,9 @@
     <key>CFBundleShortVersionString</key>
     <string>1.3.0</string>
     <key>CFBundleVersion</key>
-    <string>16</string>
+    <string>19</string>
+    <key>NSFaceIDUsageDescription</key>
+    <string>JARVIS kayıtlı oturumunu Face ID ile güvenle açar. Biyometrik bilgilerin uygulamayla paylaşılmaz.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Jarvis, mikrofona dokunarak verdiğiniz sesli komutu almak için mikrofonu kullanır.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

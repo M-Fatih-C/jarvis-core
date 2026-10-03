@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-public struct PendingApprovalData: Equatable, Sendable {
+public struct PendingApprovalData: Equatable, Codable, Sendable {
     public let approvalId: String
     public let pendingTool: String
     public let arguments: [String: String]
@@ -15,7 +15,7 @@ public struct PendingApprovalData: Equatable, Sendable {
     }
 }
 
-public struct ChatMessageItem: Identifiable, Equatable, Sendable {
+public struct ChatMessageItem: Identifiable, Equatable, Codable, Sendable {
     public let id: UUID
     public let sender: MessageSender
     public var text: String
@@ -24,12 +24,12 @@ public struct ChatMessageItem: Identifiable, Equatable, Sendable {
     public var commandId: String?
     public var approvalData: PendingApprovalData?
 
-    public enum MessageSender: Sendable {
+    public enum MessageSender: String, Codable, Sendable {
         case user
         case jarvis
     }
 
-    public enum MessageStatus: String, Sendable {
+    public enum MessageStatus: String, Codable, Sendable {
         case queued = "Sırada bekliyor..."
         case running = "Jarvis düşünüyor (Qwen M4)..."
         case waitingApproval = "İşlem onayı bekleniyor"
@@ -58,9 +58,10 @@ public struct ChatMessageItem: Identifiable, Equatable, Sendable {
 
 @MainActor
 public final class ChatViewModel: ObservableObject {
-    @Published public var messages: [ChatMessageItem] = []
+    @Published public var messages: [ChatMessageItem] = [] { didSet { persistHistory() } }
     @Published public var inputText = ""
     @Published public var isSending = false
+    @Published public private(set) var isRestoring = false
     @Published public var errorMessage: String?
     @Published public var connectionState = "Bağlantı bekleniyor"
     private let queueService = FirebaseCommandQueueService.shared
@@ -68,9 +69,21 @@ public final class ChatViewModel: ObservableObject {
     var onFailure: ((String) -> Void)?
     private var inFlightCommandIds: Set<String> = []
     private var activeAccount = ""
+    private let history = ChatHistoryStore()
+    private var historyLoaded = false
+    private var needsCloudHistory = true
+    private let sessionIdentifier = FirebaseAuthService.shared.sessionIdentifier
 
     public init() {
         messages = [ChatMessageItem(sender: .jarvis, text: "Merhaba! Bugün nasıl yardımcı olabilirim?")]
+    }
+
+    private func persistHistory() {
+        let auth = FirebaseAuthService.shared
+        guard historyLoaded, auth.sessionIdentifier == sessionIdentifier, let uid = auth.currentUserID, let project = auth.currentProjectID,
+              activeAccount == "\(project).\(uid)", let key = auth.historyKey else { return }
+        do { try history.save(messages, account: activeAccount, key: key) }
+        catch { errorMessage = "Sohbet bu cihaza kaydedilemedi. Firebase’deki iletiler korunuyor." }
     }
 
     private func conversationId(userId: String, projectId: String) -> String {
@@ -83,7 +96,7 @@ public final class ChatViewModel: ObservableObject {
 
     public func sendMessage(userId: String, projectId: String) {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isSending, !userId.isEmpty else { return }
+        guard !text.isEmpty, !isSending, !isRestoring, !userId.isEmpty else { return }
         inputText = ""
         isSending = true
         errorMessage = nil
@@ -149,6 +162,8 @@ public final class ChatViewModel: ObservableObject {
     }
 
     private func showError(_ error: Error, messageId: UUID) {
+        if case AuthError.locked = error { return }
+        if error is CancellationError { return }
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         messages[idx].status = .failed
         messages[idx].text = "Sonuç alınamadı: \(error.localizedDescription) Uygulama tekrar açıldığında aynı isteğin durumu kontrol edilir."
@@ -157,12 +172,48 @@ public final class ChatViewModel: ObservableObject {
         onFailure?(error.localizedDescription)
     }
 
+    private func restoreHistory(userId: String, projectId: String) async {
+        guard !isRestoring else { return }
+        isRestoring = true
+        defer { isRestoring = false }
+        let account = "\(projectId).\(userId)"
+        if activeAccount != account {
+            historyLoaded = false
+            activeAccount = account
+            if let key = FirebaseAuthService.shared.historyKey {
+                do { messages = try history.load(account: account, key: key) }
+                catch { messages = [] }
+            }
+            needsCloudHistory = messages.isEmpty
+        }
+        if needsCloudHistory {
+            do {
+                let commands = try await queueService.recentChatCommands(userId: userId, projectId: projectId,
+                    conversationId: conversationId(userId: userId, projectId: projectId))
+                guard FirebaseAuthService.shared.sessionIdentifier == sessionIdentifier else { return }
+                let knownIds = Set(messages.compactMap(\.commandId))
+                for cmd in commands where !knownIds.contains(cmd.id) {
+                    let date = CalendarDates.parse(cmd.created_at) ?? Date()
+                    if let input = cmd.payload["input"]?.value as? String {
+                        messages.append(ChatMessageItem(sender: .user, text: input, timestamp: date))
+                    }
+                    let reply = ChatMessageItem(sender: .jarvis, text: "", timestamp: date, status: .queued, commandId: cmd.id)
+                    messages.append(reply)
+                    apply(status: cmd.status, result: cmd.result?.mapValues { $0.value }, messageId: reply.id)
+                    if cmd.status == .failed { showError(CommandQueueError.commandFailed(cmd.error ?? "İstek tamamlanamadı."), messageId: reply.id) }
+                }
+                messages.sort { $0.timestamp < $1.timestamp }
+                needsCloudHistory = false
+            } catch { errorMessage = "Geçmiş şu anda alınamıyor. Bağlantı geldiğinde tekrar dene." }
+        }
+        historyLoaded = true
+        persistHistory()
+    }
+
     /// Resume reads after restart/foreground; never resubmit an uncertain write.
     public func resumePending(userId: String, projectId: String) async {
         guard !userId.isEmpty, !projectId.isEmpty else { return }
-        let account = "\(projectId).\(userId)"
-        if !activeAccount.isEmpty && activeAccount != account { messages.removeAll() }
-        activeAccount = account
+        await restoreHistory(userId: userId, projectId: projectId)
         for id in queueService.getPendingCommandIds(userId: userId, projectId: projectId) {
             if inFlightCommandIds.contains(id) { continue }
             inFlightCommandIds.insert(id)

@@ -5,15 +5,13 @@ import Security
 /// Never stores secrets in UserDefaults.
 public final class KeychainHelper {
     public static let shared = KeychainHelper()
-    private let serviceName = "com.mfatihc.jarvis.auth"
+    private let serviceName: String
 
-    private init() {}
+    public init(serviceName: String = "com.mfatihc.jarvis.auth") { self.serviceName = serviceName }
 
     public func save(key: String, value: String) -> Bool {
         guard let data = value.data(using: .utf8) else { return false }
 
-        // Remove any existing item before adding
-        delete(key: key)
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -23,8 +21,13 @@ public final class KeychainHelper {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
-        return status == errSecSuccess
+        var lookup = query
+        lookup.removeValue(forKey: kSecValueData as String)
+        lookup.removeValue(forKey: kSecAttrAccessible as String)
+        let updated = SecItemUpdate(lookup as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if updated == errSecSuccess { return true }
+        guard updated == errSecItemNotFound else { return false }
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
     }
 
     public func read(key: String) -> String? {

@@ -95,7 +95,7 @@ async def test_successful_execution_and_readback_verification() -> None:
         # Call 1: reminders.create
         {"id": "ek_rem_777", "status": "created"},
         # Call 2: reminders.list (read-back verification)
-        {"reminders": [{"id": "ek_rem_777", "title": "Burs Başvurusu", "completed": False}]},
+        {"id": "ek_rem_777", "title": "Burs Başvurusu", "due_at": "2026-10-08T17:00:00+00:00"},
     ]
 
     approval_svc = TaskApprovalService(storage=storage, bridge_client=mock_bridge)

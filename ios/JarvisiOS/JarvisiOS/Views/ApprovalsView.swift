@@ -26,7 +26,7 @@ public struct ApprovalsView: View {
                     }
                 }
 
-                if viewModel.proposals.isEmpty && !viewModel.isLoading {
+                if viewModel.proposals.isEmpty && !viewModel.isLoading && viewModel.errorMessage == nil {
                     Section {
                         VStack(spacing: 8) {
                             Image(systemName: "checkmark.seal.fill")
@@ -133,6 +133,7 @@ public struct ApprovalsView: View {
                 }
             }
             .navigationTitle("İşlem Onayları")
+            .task { await viewModel.loadData() }
             .refreshable {
                 await viewModel.loadData()
             }
@@ -177,12 +178,12 @@ struct ActionRow: View {
                     .cornerRadius(4)
             }
 
-            if let digest = action.action_digest {
+            if action.action_digest != nil {
                 HStack(spacing: 4) {
                     Image(systemName: "lock.shield.fill")
                         .font(.caption2)
                         .foregroundColor(.green)
-                    Text("Digest: \(String(digest.prefix(16)))...")
+                    Text("Onay ayrıntıları güvenli biçimde bağlı")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }
@@ -200,12 +201,13 @@ struct ActionRow: View {
                     .foregroundColor(.secondary)
             }
 
-            if action.status == .proposed {
+            if let error = action.error_message { Text(error).font(.caption).foregroundStyle(.orange) }
+            if action.status == .proposed || (action.status == .failed && action.external_id == nil) {
                 Button(action: onRequestApproval) {
                     if isProcessing {
                         ProgressView()
                     } else {
-                        Text("Onay İste (PolicyEngine R2)")
+                        Text("Onaya Hazırla")
                             .font(.caption)
                             .frame(maxWidth: .infinity)
                     }
@@ -233,11 +235,12 @@ struct ActionRow: View {
                     .disabled(isProcessing)
                 }
                 .font(.caption)
+                Button("Onayı yenile", action: onRequestApproval).font(.caption).disabled(isProcessing)
             } else if action.status == .executed {
                 HStack {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
-                    Text("Apple EventKit üzerinde kaydedildi")
+                    Text("Kaydedildi ve doğrulandı")
                         .font(.caption)
                         .foregroundColor(.green)
                 }

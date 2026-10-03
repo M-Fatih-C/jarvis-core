@@ -31,7 +31,9 @@ public struct EmailsView: View {
                     }
                 }
 
-                Section(header: Text("Önemli E-posta Analizleri (Qwen AI)")) {
+                Section { Text("Yalnızca takip açıldıktan sonra gelen yeni e-postalar incelenir. Kontroller her gün 09.00 ve 20.00’de yapılır.").font(.caption).foregroundStyle(.secondary) }
+                if let error = viewModel.errorMessage { Section { Text(error).foregroundStyle(.orange) } }
+                Section(header: Text("E-posta Özetleri")) {
                     if viewModel.isLoading {
                         HStack {
                             Spacer()
@@ -39,12 +41,12 @@ public struct EmailsView: View {
                             Spacer()
                         }
                         .padding(.vertical, 12)
-                    } else if viewModel.filteredEmails.isEmpty {
+                    } else if viewModel.filteredEmails.isEmpty && viewModel.errorMessage == nil {
                         VStack(spacing: 8) {
                             Image(systemName: "tray")
                                 .font(.largeTitle)
                                 .foregroundColor(.secondary)
-                            Text("İncelenmiş e-posta bulunmuyor veya sunucu bağlantısı bekleniyor.")
+                            Text("Henüz yeni bir e-posta özeti yok.")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                                 .multilineTextAlignment(.center)
@@ -96,7 +98,8 @@ public struct EmailsView: View {
                     }
                 }
             }
-            .navigationTitle("E-posta Analizi")
+            .navigationTitle("E-postalar")
+            .task { await viewModel.loadEmails() }
             .refreshable {
                 await viewModel.loadEmails()
             }

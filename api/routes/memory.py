@@ -5,7 +5,6 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from api.dependencies import get_memory_service
-from core.memory.crypto import MemoryEncryptor
 from core.memory.models import (
     MemoryCandidate,
     MemoryFilters,
@@ -57,6 +56,11 @@ class MemoryResponse(BaseModel):
 
 
 def _record_to_response(rec: MemoryRecord, decrypted_content: str | None = None) -> MemoryResponse:
+    # Administrative loopback routes do not carry verified identity/category consent.
+    # Never turn encrypted records into a private-data bypass for these callers.
+    if rec.sensitivity == MemorySensitivity.PRIVATE:
+        rec = rec.storage_copy()
+        decrypted_content = None
     display_content = decrypted_content or rec.content
     return MemoryResponse(
         id=rec.id,
@@ -108,17 +112,7 @@ async def list_memories(
         limit=limit,
     )
     records = await memory.repository.list(filters)
-    responses = []
-    for rec in records:
-        decrypted = None
-        if rec.sensitivity == MemorySensitivity.PRIVATE and rec.encrypted_content:
-            try:
-                key = await memory._key_provider.get_or_create_memory_key()
-                decrypted = MemoryEncryptor.decrypt(rec.encrypted_content, key)
-            except Exception:
-                decrypted = "[Decryption Failed]"
-        responses.append(_record_to_response(rec, decrypted_content=decrypted))
-    return responses
+    return [_record_to_response(rec) for rec in records if rec.sensitivity != MemorySensitivity.PRIVATE]
 
 
 @router.get("/memories/search")
@@ -149,15 +143,9 @@ async def get_memory(
     if not rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found")
 
-    decrypted = None
-    if rec.sensitivity == MemorySensitivity.PRIVATE and rec.encrypted_content:
-        try:
-            key = await memory._key_provider.get_or_create_memory_key()
-            decrypted = MemoryEncryptor.decrypt(rec.encrypted_content, key)
-        except Exception:
-            decrypted = "[Decryption Failed]"
-
-    return _record_to_response(rec, decrypted_content=decrypted)
+    if rec.sensitivity == MemorySensitivity.PRIVATE:
+        raise HTTPException(status_code=403, detail="PRIVATE records require verified identity and category consent")
+    return _record_to_response(rec)
 
 
 @router.post("/memories", response_model=MemoryResponse, status_code=status.HTTP_201_CREATED)
@@ -166,6 +154,8 @@ async def create_memory(
     memory: MemoryService = Depends(get_memory_service),
 ) -> MemoryResponse:
     """Explicitly store a new memory item."""
+    if req.sensitivity == MemorySensitivity.PRIVATE:
+        raise HTTPException(status_code=403, detail="PRIVATE writes require verified identity and category consent")
     candidate = MemoryCandidate(
         kind=req.kind,
         content=req.content,
@@ -197,12 +187,10 @@ async def update_memory(
     if not rec:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found")
 
+    if rec.sensitivity == MemorySensitivity.PRIVATE:
+        raise HTTPException(status_code=403, detail="PRIVATE writes require verified identity and category consent")
     if req.content is not None:
         rec.content = req.content
-        if rec.sensitivity == MemorySensitivity.PRIVATE:
-            key = await memory._key_provider.get_or_create_memory_key()
-            import json
-            rec.encrypted_content = json.dumps(MemoryEncryptor.encrypt(req.content, key))
         rec.embedding = await memory._embeddings.embed_document(req.content)
 
     if req.importance is not None:
@@ -222,6 +210,9 @@ async def delete_memory(
     memory: MemoryService = Depends(get_memory_service),
 ) -> dict[str, Any]:
     """Soft-delete a memory record (tombstone)."""
+    rec = await memory.repository.get(memory_id)
+    if rec and rec.sensitivity == MemorySensitivity.PRIVATE:
+        raise HTTPException(status_code=403, detail="PRIVATE writes require verified identity and category consent")
     deleted = await memory.repository.delete(memory_id, soft_delete=True)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Memory not found")
