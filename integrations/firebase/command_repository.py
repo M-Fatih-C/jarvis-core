@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+import random
 from typing import Any
 from core.cloud.models import CloudCommand, CommandStatus
 from core.cloud.repositories import CommandConflictError, CommandRepository
@@ -12,6 +14,19 @@ from core.models.tools import RiskLevel
 from integrations.firebase.client import FirestoreClientProvider
 
 logger = get_logger("jarvis.firebase.command")
+
+
+def _transaction_aborted(error: BaseException) -> bool:
+    """The SDK can mask a read-phase ABORTED with a rollback ValueError."""
+    from google.api_core.exceptions import Aborted
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, Aborted):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class FirestoreCommandRepository(CommandRepository):
@@ -185,10 +200,22 @@ class FirestoreCommandRepository(CommandRepository):
                 transaction.set(ref, self._cmd_to_doc(cmd))
                 return cmd
 
-            leased = await claim(self._client_provider.get_client().transaction())
+            leased = await self._claim_with_retry(claim)
             if leased:
                 return leased
         return None
+
+    async def _claim_with_retry(self, claim):
+        # The SDK retries ABORTED commits, but not aborted reads in its callback.
+        # A new transaction must re-read both the command and its idempotency key.
+        # Never retry ambiguous transport failures or execute any external action here.
+        for attempt in range(3):
+            try:
+                return await claim(self._client_provider.get_client().transaction())
+            except Exception as exc:
+                if attempt == 2 or not _transaction_aborted(exc):
+                    raise
+                await asyncio.sleep(random.uniform(0.05, 0.15) * (2 ** attempt))
 
     async def list(self, status: CommandStatus | None = None) -> list[CloudCommand]:
         col = self._get_collection()
