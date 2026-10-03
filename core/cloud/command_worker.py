@@ -17,7 +17,7 @@ from core.agent.exceptions import (
 from core.agent.runtime import AgentRuntime
 from core.agent.state_machine import AgentState
 from core.cloud.models import CloudCommand, CommandStatus
-from core.cloud.repositories import CommandRepository
+from core.cloud.repositories import CommandConflictError, CommandRepository
 from core.config.settings import Settings, get_settings
 from core.logging.setup import get_logger
 from core.models.agent import AgentMode
@@ -120,7 +120,7 @@ class CommandWorker:
             )
 
         # Verify User Authorization
-        cmd_user = cmd.payload.get("user_id") or getattr(cmd, "user_id", None)
+        cmd_user = cmd.user_id or cmd.payload.get("user_id")
         if cmd_user and cmd_user != self._settings.jarvis_uid:
             return False, None, f"UnauthorizedUser: Requesting user '{cmd_user}' does not match authorized owner."
 
@@ -157,7 +157,7 @@ class CommandWorker:
 
         # Consume approval atomically before execution
         try:
-            self._runtime.approval_store.consume(approval_id, approval_req.tool_call)
+            self._runtime.approval_store.consume(approval_id, approval_req.tool_call, user_id=cmd_user)
         except Exception as exc:
             return False, None, f"ApprovalConsumptionFailed: {exc}"
 
@@ -204,6 +204,11 @@ class CommandWorker:
         cmd = await self._repo.update(cmd)
 
         try:
+            if self._settings.firebase_enabled and (
+                cmd.user_id != self._settings.jarvis_uid
+                or cmd.payload.get("user_id", cmd.user_id) != cmd.user_id
+            ):
+                raise PermissionError("Authenticated command owner mismatch")
             if cmd.type == "tool_execution":
                 success, data, error = await self._verify_and_execute_tool(cmd)
                 if success:
@@ -217,7 +222,10 @@ class CommandWorker:
 
             elif cmd.type == "agent_run":
                 user_query = cmd.payload.get("input") or cmd.payload.get("message", "")
-                agent_res = await self._runtime.run(user_query, source="cloud_command")
+                agent_res = await self._runtime.run(
+                    user_query, source="cloud_command", user_id=cmd.user_id,
+                    conversation_id=cmd.payload.get("conversation_id"),
+                )
 
                 if agent_res.state == AgentState.WAITING_APPROVAL:
                     cmd.status = CommandStatus.WAITING_APPROVAL
@@ -247,7 +255,7 @@ class CommandWorker:
             elif cmd.type == "approval_response":
                 # User response submitted from iPhone
                 approval_id_str = cmd.payload.get("approval_id")
-                decision = str(cmd.payload.get("decision", "approved")).lower()
+                decision = str(cmd.payload.get("decision", "")).lower()
 
                 if not approval_id_str:
                     cmd.status = CommandStatus.FAILED
@@ -278,7 +286,7 @@ class CommandWorker:
                         cmd.error = f"ApprovalExpired: Approval '{approval_id}' has expired."
                     else:
                         # Verify User Authorization
-                        cmd_user = cmd.payload.get("user_id") or getattr(cmd, "user_id", None)
+                        cmd_user = cmd.user_id or cmd.payload.get("user_id")
                         if cmd_user and cmd_user != self._settings.jarvis_uid:
                             cmd.status = CommandStatus.FAILED
                             cmd.error = f"UnauthorizedUser: Requesting user '{cmd_user}' does not match authorized owner."
@@ -292,8 +300,7 @@ class CommandWorker:
                                 cmd.status = CommandStatus.FAILED
                                 cmd.error = f"ActionDigestMismatch: Client action digest does not match server approval."
                             else:
-                                self._runtime.approval_store.approve(approval_id, current_tool_call=server_req.tool_call)
-                                completed_run = await self._runtime.resume_approval(approval_id)
+                                completed_run = await self._runtime.resume_approval(approval_id, user_id=cmd_user)
                                 if completed_run.state == AgentState.COMPLETED:
                                     cmd.status = CommandStatus.COMPLETED
                                     cmd.result = {
@@ -318,8 +325,7 @@ class CommandWorker:
                                     cmd.error = completed_run.error or "Run did not complete"
                         elif decision in ("rejected", "dismissed"):
                             reason = cmd.payload.get("reason", "İşlem iPhone üzerinden reddedildi.")
-                            self._runtime.approval_store.reject(approval_id)
-                            rejected_run = await self._runtime.resume_rejection(approval_id, reason=reason)
+                            rejected_run = await self._runtime.resume_rejection(approval_id, reason=reason, user_id=cmd_user)
                             cmd.status = CommandStatus.COMPLETED
                             cmd.result = {
                                 "response": rejected_run.final_response,
@@ -330,29 +336,8 @@ class CommandWorker:
                             cmd.error = f"Unsupported approval decision '{decision}'"
 
             elif cmd.type == "task_proposal_approval":
-                # M4.2 TaskProposal execution and read-back verification
-                if not self._task_approval_service:
-                    cmd.status = CommandStatus.FAILED
-                    cmd.error = "TaskApprovalService is not configured on this worker."
-                else:
-                    proposal_id_str = cmd.payload.get("proposal_id")
-                    decision = str(cmd.payload.get("decision", "approved")).lower()
-
-                    if decision == "approved":
-                        action_dict = cmd.payload.get("action", {})
-                        from core.task_planning.schemas import TaskActionProposal
-                        action = TaskActionProposal.model_validate(action_dict)
-                        result = await self._task_approval_service.approve_and_execute_action(action)
-                        cmd.status = CommandStatus.COMPLETED
-                        cmd.result = result.model_dump(mode="json")
-                    elif decision in ("dismissed", "rejected"):
-                        if proposal_id_str:
-                            await self._task_approval_service.dismiss_proposal(UUID(proposal_id_str))
-                        cmd.status = CommandStatus.COMPLETED
-                        cmd.result = {"status": "DISMISSED"}
-                    else:
-                        cmd.status = CommandStatus.FAILED
-                        cmd.error = f"Unsupported task decision '{decision}'"
+                cmd.status = CommandStatus.FAILED
+                cmd.error = "Use a server-generated approval_id and action_digest through approval_response."
 
             else:
                 cmd.status = CommandStatus.FAILED
@@ -364,7 +349,22 @@ class CommandWorker:
             cmd.error = str(exc)
 
         # Persist final state
-        updated_cmd = await self._repo.update(cmd)
+        for attempt in range(6):
+            try:
+                updated_cmd = await self._repo.update(cmd)
+                break
+            except CommandConflictError:
+                # The first write may have committed before its response was lost.
+                existing = await self._repo.get(cmd.id)
+                if existing and existing.status == cmd.status and existing.result == cmd.result and existing.error == cmd.error:
+                    updated_cmd = existing
+                    break
+                raise
+            except Exception:
+                if attempt == 5:
+                    raise
+                logger.warning("command_result_write_retry", command_id=cmd.id, attempt=attempt + 1)
+                await asyncio.sleep(min(15, 2 ** attempt))
         logger.info(
             "command_finished",
             command_id=cmd.id,

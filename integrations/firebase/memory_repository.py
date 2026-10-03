@@ -50,6 +50,7 @@ class FirestoreMemoryRepository(MemoryRepository):
         """Convert MemoryRecord to Firestore document enforcing security constraints."""
         if memory.sensitivity == MemorySensitivity.LOCAL_ONLY:
             raise ValueError("LOCAL_ONLY memory records must never be saved to Firestore")
+        memory = memory.storage_copy()
 
         data: dict[str, Any] = {
             "id": str(memory.id),
@@ -78,8 +79,12 @@ class FirestoreMemoryRepository(MemoryRepository):
         }
 
         if memory.sensitivity == MemorySensitivity.PRIVATE:
-            # Plaintext content and cloud embedding are STRICTLY FORBIDDEN in Firestore
+            # Plaintext content, structured data, values, subjects, and cloud embedding are STRICTLY FORBIDDEN in Firestore
             data["content"] = None
+            data["structured"] = {}
+            data["value"] = None
+            data["subject"] = "private_vault"
+            data["predicate"] = "encrypted"
             data["embedding"] = None
             data["embedding_model"] = None
             if memory.encrypted_content:

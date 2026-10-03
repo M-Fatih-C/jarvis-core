@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+from uuid import uuid4
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Coroutine
 from zoneinfo import ZoneInfo
@@ -34,6 +36,16 @@ class EmailSyncScheduler:
         self.last_run: datetime | None = None
         self._running = False
         self._task: asyncio.Task[None] | None = None
+        self._tick_lock = asyncio.Lock()
+        storage = getattr(pipeline, "storage", None)
+        path = getattr(storage, "_db_path", ":memory:")
+        self._state = sqlite3.connect(path if isinstance(path, str) else ":memory:")
+        self._state.execute("CREATE TABLE IF NOT EXISTS email_schedule_state (id INTEGER PRIMARY KEY, last_success TEXT, lease_until TEXT, owner TEXT)")
+        self._state.execute("INSERT OR IGNORE INTO email_schedule_state (id) VALUES (1)")
+        self._state.commit()
+        row = self._state.execute("SELECT last_success FROM email_schedule_state WHERE id=1").fetchone()
+        self.last_run = datetime.fromisoformat(row[0]) if row[0] else None
+
 
     def _get_tz(self) -> ZoneInfo:
         try:
@@ -87,22 +99,31 @@ class EmailSyncScheduler:
         if not self.enabled:
             return None
 
-        tz = self._get_tz()
-        current_time = now or datetime.now(tz)
-
-        should_run = False
-        if self.last_run is None:
-            # First tick after enabling
-            should_run = True
-        elif self.has_missed_sync(self.last_run, current_time):
-            logger.info("missed_email_sync_detected_running_catchup")
-            should_run = True
-
-        if should_run:
-            self.last_run = current_time
-            return await self.pipeline.run()
-
-        return None
+        async with self._tick_lock:
+            current_time = now or datetime.now(self._get_tz())
+            current_utc = current_time.astimezone(timezone.utc)
+            row = self._state.execute("SELECT last_success FROM email_schedule_state WHERE id=1").fetchone()
+            self.last_run = datetime.fromisoformat(row[0]) if row[0] else self.last_run
+            if self.last_run is not None and not self.has_missed_sync(self.last_run, current_time):
+                return None
+            owner = str(uuid4())
+            with self._state:
+                claimed = self._state.execute(
+                    "UPDATE email_schedule_state SET lease_until=?, owner=? WHERE id=1 AND (lease_until IS NULL OR lease_until < ?)",
+                    ((current_utc + timedelta(minutes=30)).isoformat(), owner, current_utc.isoformat()),
+                ).rowcount
+            if not claimed:
+                return None
+            try:
+                result = await self.pipeline.run()
+                if not result.errors:
+                    self.last_run = current_utc
+                    with self._state:
+                        self._state.execute("UPDATE email_schedule_state SET last_success=? WHERE id=1 AND owner=?", (current_utc.isoformat(), owner))
+                return result
+            finally:
+                with self._state:
+                    self._state.execute("UPDATE email_schedule_state SET lease_until=NULL, owner=NULL WHERE id=1 AND owner=?", (owner,))
 
     async def _loop(self, check_interval_seconds: float = 60.0) -> None:
         """Background monitoring loop."""

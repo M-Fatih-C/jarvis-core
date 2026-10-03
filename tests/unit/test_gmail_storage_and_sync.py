@@ -16,6 +16,39 @@ from integrations.gmail.storage import EmailStorage
 from integrations.gmail.sync import GmailSyncService
 
 
+@pytest.mark.asyncio
+async def test_new_mail_boundary_survives_restart_and_preserves_backlog(tmp_path, sample_email):
+    path = str(tmp_path / "mail.db")
+    store = EmailStorage(path, encryption_enabled=False)
+    cutoff = sample_email.received_at + timedelta(hours=1)
+    await store.save_email(sample_email, "user@test.com")
+    fresh = sample_email.model_copy(update={"message_id": "new", "content_hash": "new-hash", "received_at": cutoff + timedelta(seconds=1)})
+    await store.save_email(fresh, "user@test.com")
+    await store.set_monitoring_start(cutoff)
+    store.close()
+    store = EmailStorage(path, encryption_enabled=False)
+    assert await store.get_monitoring_start() == cutoff
+    assert await store.pending_analysis_ids() == ["new"]
+    assert await store.get_email(sample_email.message_id) is not None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_sync_rejects_old_mail_returned_by_history(memory_storage, sample_email):
+    cutoff = sample_email.received_at + timedelta(hours=1)
+    await memory_storage.set_monitoring_start(cutoff)
+    client = AsyncMock(spec=GmailClient)
+    normalizer = MagicMock(spec=GmailNormalizer)
+    normalizer.normalize_message.return_value = sample_email
+    sync = GmailSyncService(client, memory_storage, normalizer=normalizer)
+    from integrations.gmail.models import SyncResult
+    result = SyncResult()
+    messages = await sync._fetch_and_persist_messages([{"id": sample_email.message_id}], "user@test.com", "default", result)
+    assert messages == []
+    assert result.skipped_count == 1
+    assert await memory_storage.get_email(sample_email.message_id) is None
+
+
 @pytest.fixture
 def memory_storage() -> EmailStorage:
     storage = EmailStorage(db_path=":memory:")
@@ -466,5 +499,4 @@ async def test_sync_duplicate_message_ids_in_history(memory_storage: EmailStorag
     assert res.new_count == 1
     assert res.skipped_count == 1
     assert len(new_emails) == 1
-
 

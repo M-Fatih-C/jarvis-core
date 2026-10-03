@@ -23,6 +23,9 @@ class AgentRun(BaseModel):
     agent_mode: AgentMode = Field(default=AgentMode.ASSIST, description="Operational policy mode")
     user_input: str = Field(description="Initial prompt or message from user")
 
+    user_id: str | None = None
+    conversation_id: str | None = None
+
     step_count: int = Field(default=0, description="Number of cognitive loops completed")
     tool_call_count: int = Field(default=0, description="Total number of tools executed")
 

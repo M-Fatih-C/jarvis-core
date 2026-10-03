@@ -13,41 +13,34 @@ service cloud.firestore {
         // Mobile clients may read their own commands
         allow read: if request.auth != null && request.auth.uid == userId;
 
-        // Mobile clients may CREATE commands with initial status PENDING/QUEUED,
+        // Mobile clients may CREATE commands with canonical queued status,
         // and cannot set worker-owned fields (lease_owner, leased_until, result, error, worker_id).
-        allow create: if request.auth != null 
+        allow create: if request.auth != null
           && request.auth.uid == userId
           && request.resource.data.user_id == userId
-          && request.resource.data.status in ['PENDING', 'pending', 'QUEUED', 'queued']
-          && (!('lease_owner' in request.resource.data) || request.resource.data.lease_owner == null)
-          && (!('leased_until' in request.resource.data) || request.resource.data.leased_until == null)
-          && (!('lease_expires_at' in request.resource.data) || request.resource.data.lease_expires_at == null)
-          && (!('result' in request.resource.data) || request.resource.data.result == null)
-          && (!('error' in request.resource.data) || request.resource.data.error == null)
-          && (!('worker_id' in request.resource.data) || request.resource.data.worker_id == null);
+          && request.resource.data.id == commandId
+          && request.resource.data.status == 'queued'
+          && request.resource.data.type in ['agent_run', 'approval_response', 'tool_execution']
+          && request.resource.data.idempotency_key is string
+          && request.resource.data.keys().hasOnly([
+            'id', 'user_id', 'type', 'name', 'source_device', 'target_device',
+            'payload', 'status', 'idempotency_key', 'created_at', 'available_at', 'expires_at'
+          ]);
 
-        // Mobile clients may ONLY update commands to cancel or respond to pending approvals.
-        // They CANNOT modify worker-owned execution status (e.g. COMPLETED, RUNNING),
-        // lease state, result, error, or bypass approval verification.
-        allow update: if request.auth != null
-          && request.auth.uid == userId
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-              'lease_owner', 'leased_until', 'lease_expires_at', 'result', 'error', 'worker_id'
-            ])
-          // Mobile client can cancel an unleased pending command:
-          && (
-            (resource.data.status in ['PENDING', 'pending'] && request.resource.data.status in ['CANCELLED', 'cancelled'])
-            ||
-            // Or if status is WAITING_APPROVAL, client can provide approval response
-            (resource.data.status in ['WAITING_APPROVAL', 'waiting_approval'] && request.resource.data.status in ['WAITING_APPROVAL', 'waiting_approval', 'CANCELLED', 'cancelled'])
-          );
+        // Approval responses are separate immutable commands. Only an unleased
+        // queued command can be cancelled; its identity and arguments stay fixed.
+        allow update: if request.auth != null && request.auth.uid == userId
+          && resource.data.status == 'queued'
+          && request.resource.data.status == 'cancelled'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
 
         // Disallow deletion by mobile client
         allow delete: if false;
       }
 
       match /devices/{deviceId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow write: if false;
       }
 
       match /sync_state/{stateId} {
@@ -60,10 +53,7 @@ service cloud.firestore {
 
       match /task_proposals/{proposalId} {
         allow read: if request.auth != null && request.auth.uid == userId;
-        // User can only update proposal status from PROPOSED / WAITING_APPROVAL to APPROVED or DISMISSED
-        allow update: if request.auth != null
-          && request.auth.uid == userId
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['executed_at', 'readback_verified', 'action_result']);
+        allow update: if false;
         allow create, delete: if false;
       }
     }

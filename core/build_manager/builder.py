@@ -3,6 +3,7 @@
 import asyncio
 from datetime import datetime, timezone
 import os
+import plistlib
 import shutil
 import time
 from core.build_manager.signing import SigningInspector
@@ -58,6 +59,10 @@ class XcodeBuilder:
             "-destination", destination,
             "-derivedDataPath", derived_data_path,
         ]
+
+        local_firebase_config = os.path.join(os.path.dirname(self.project_path), "JarvisiOS", "GoogleService-Info.plist")
+        if os.path.isfile(local_firebase_config):
+            cmd.append(f"JARVIS_FIREBASE_CONFIG={local_firebase_config}")
 
         if not code_signing_allowed:
             cmd.append("CODE_SIGNING_ALLOWED=NO")
@@ -129,10 +134,12 @@ class XcodeBuilder:
                     )
 
             is_codesigned = await SigningInspector.verify_codesign(app_path)
+            with open(os.path.join(app_path, "Info.plist"), "rb") as info_file:
+                app_info = plistlib.load(info_file)
             artifact = BuildArtifact(
                 app_path=app_path,
-                bundle_id="com.mfatihc.jarvis",
-                version="1.0.0",
+                bundle_id=app_info["CFBundleIdentifier"],
+                version=app_info["CFBundleShortVersionString"],
                 created_at=datetime.now(timezone.utc),
                 codesign_valid=is_codesigned,
             )

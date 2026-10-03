@@ -64,6 +64,11 @@ class EmailStorage:
         """Create necessary tables and indices."""
         with self._conn:
             self._conn.executescript("""
+                CREATE TABLE IF NOT EXISTS processed_emails (message_id TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS email_monitoring_preferences (
+                    id INTEGER PRIMARY KEY CHECK (id=1),
+                    started_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS email_sync_state (
                     account_email TEXT PRIMARY KEY,
                     last_synced_at TEXT,
@@ -276,7 +281,8 @@ class EmailStorage:
                 if email.body_preview:
                     preview_to_store = json.dumps(MemoryEncryptor.encrypt(email.body_preview, key))
             except Exception as exc:
-                logger.warning("email_body_encrypt_failed_storing_plain", error=str(exc))
+                logger.warning("email_body_encrypt_failed", error_type=type(exc).__name__)
+                raise
 
         async with self._lock:
             with self._conn:
@@ -431,7 +437,7 @@ class EmailStorage:
             with self._conn:
                 self._conn.execute(
                     """
-                    INSERT OR REPLACE INTO task_proposals (
+                    INSERT OR IGNORE INTO task_proposals (
                         task_id, source_message_id, title, description, category,
                         priority, deadline, deadline_confidence, raw_deadline_text,
                         proposed_action, status, created_at
@@ -705,9 +711,56 @@ class EmailStorage:
                     (notification_id, message_id, task_id, title, now_iso),
                 )
 
+    async def claim_notification(self, notification_id: str, message_id: str, title: str, task_id: str | None = None) -> bool:
+        """Reserve once before dispatch; an uncertain delivery is never repeated."""
+        async with self._lock:
+            with self._conn:
+                cursor = self._conn.execute(
+                    "INSERT OR IGNORE INTO sent_notifications (notification_id, message_id, task_id, title, sent_at) VALUES (?, ?, ?, ?, ?)",
+                    (notification_id, message_id, task_id, title, datetime.now(timezone.utc).isoformat()),
+                )
+                return cursor.rowcount == 1
+
+    async def release_notification(self, notification_id: str) -> None:
+        """Allow retry only when the native bridge explicitly rejected delivery."""
+        async with self._lock:
+            with self._conn:
+                self._conn.execute("DELETE FROM sent_notifications WHERE notification_id = ?", (notification_id,))
+
     def close(self) -> None:
         """Close SQLite connection."""
         try:
             self._conn.close()
         except Exception:
             pass
+
+    async def pending_analysis_ids(self, limit: int = 100) -> list[str]:
+        async with self._lock:
+            return [r[0] for r in self._conn.execute(
+                """SELECT message_id FROM emails
+                   WHERE message_id NOT IN (SELECT message_id FROM processed_emails)
+                   AND (NOT EXISTS (SELECT 1 FROM email_monitoring_preferences)
+                        OR julianday(received_at) >= (SELECT julianday(started_at) FROM email_monitoring_preferences WHERE id=1))
+                   ORDER BY received_at LIMIT ?""", (limit,)
+            )]
+
+    async def set_monitoring_start(self, started_at: datetime) -> None:
+        """Persist an explicit new-mail-only boundary without deleting existing mail."""
+        if started_at.tzinfo is None:
+            raise ValueError("Monitoring start must include a timezone")
+        async with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO email_monitoring_preferences VALUES (1, ?)",
+                    (started_at.astimezone(timezone.utc).isoformat(),),
+                )
+
+    async def get_monitoring_start(self) -> datetime | None:
+        async with self._lock:
+            row = self._conn.execute("SELECT started_at FROM email_monitoring_preferences WHERE id=1").fetchone()
+            return datetime.fromisoformat(row[0]) if row else None
+
+    async def mark_analyzed(self, message_id: str) -> None:
+        async with self._lock:
+            with self._conn:
+                self._conn.execute("INSERT OR IGNORE INTO processed_emails VALUES (?)", (message_id,))

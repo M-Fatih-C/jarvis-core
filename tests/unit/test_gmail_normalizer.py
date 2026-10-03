@@ -7,6 +7,16 @@ import pytest
 from integrations.gmail.normalizer import GmailNormalizer, html_to_readable_text
 
 
+def test_receipt_time_takes_precedence_over_sender_date() -> None:
+    from datetime import datetime, timezone
+    received = datetime(2026, 10, 3, 15, 0, tzinfo=timezone.utc)
+    email = GmailNormalizer.normalize_message({
+        "id": "delayed-mail", "threadId": "thread", "internalDate": str(int(received.timestamp() * 1000)),
+        "payload": {"headers": [{"name": "Date", "value": "Thu, 01 Oct 2026 14:30:00 +0300"}], "mimeType": "text/plain", "body": {}},
+    })
+    assert email.received_at == received
+
+
 def _b64url(s: str) -> str:
     return base64.urlsafe_b64encode(s.encode("utf-8")).decode("ascii").rstrip("=")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from uuid import UUID, uuid4
+from typing import Any
 from core.config.settings import Settings, get_settings
 from core.llm.base import LLMAdapter
 from core.logging.setup import get_logger
@@ -16,6 +17,7 @@ from core.memory.extractor import MemoryExtractor
 from core.memory.local_store import SQLiteMemoryRepository
 from core.memory.models import (
     MemoryCandidate,
+    MemoryAuthorizationContext,
     MemoryFilters,
     MemoryKind,
     MemoryRecord,
@@ -79,9 +81,9 @@ class MemoryService:
     def retriever(self) -> MemoryRetriever:
         return self._retriever
 
-    async def retrieve(self, query: str, limit: int | None = None) -> list[MemorySearchResult]:
+    async def retrieve(self, query: str, limit: int | None = None, *, auth_context: MemoryAuthorizationContext | None = None) -> list[MemorySearchResult]:
         """Convenience method delegating retrieval to the underlying MemoryRetriever."""
-        return await self._retriever.retrieve(query=query, limit=limit)
+        return await self._retriever.retrieve(query=query, limit=limit, auth_context=auth_context)
 
     async def store_candidate(self, candidate: MemoryCandidate) -> MemoryRecord | None:
         """Process, validate, encrypt, embed, and persist a memory candidate proposal."""
@@ -103,8 +105,6 @@ class MemoryService:
             logger.info(
                 "memory_contradiction_superseded",
                 old_id=str(old_rec.id),
-                subject=old_rec.subject,
-                predicate=old_rec.predicate,
             )
             old_rec.status = MemoryStatus.SUPERSEDED
             await self._repo.update(old_rec)
@@ -129,6 +129,7 @@ class MemoryService:
                 "subject": candidate.subject,
                 "predicate": candidate.predicate,
                 "value": candidate.value,
+                "source_ref": candidate.source_ref,
             }
             enc_dict = MemoryEncryptor.encrypt_private_payload(
                 private_payload, key, record_id=rec_id, schema_version=schema_ver
@@ -195,7 +196,7 @@ class MemoryService:
             encrypted_content=encrypted_content,
             structured=structured_to_store,
             source_type=candidate.source_type,
-            source_ref=candidate.source_ref,
+            source_ref=None if decision.final_sensitivity == MemorySensitivity.PRIVATE else candidate.source_ref,
             as_of=candidate.as_of,
             confidence=candidate.confidence,
             importance=candidate.importance,
@@ -226,9 +227,17 @@ class MemoryService:
         """Fetch and format relevant memory context block for inclusion in LLM prompt."""
         try:
             results = await self._retriever.retrieve(query)
+            if any(term in query.lower() for term in ("hafta", "ders", "programım", "schedule")):
+                # Keep dated sample schedules visible even when generic academic
+                # calendar records rank above them. Their historical status is retained.
+                schedules = await self._repo.list(filters=MemoryFilters(status=MemoryStatus.ACTIVE, category="education_schedule"))
+                extras = [MemorySearchResult(record=r, score=0, semantic_similarity=0)
+                          for r in schedules if r.sensitivity != MemorySensitivity.PRIVATE]
+                schedule_ids = {hit.record.id for hit in extras}
+                results = extras + [hit for hit in results if hit.record.id not in schedule_ids]
             return self._retriever.format_context_block(results)
         except Exception as exc:
-            logger.warning("memory_context_retrieval_failed", error=str(exc))
+            logger.warning("memory_context_retrieval_failed", error_type=type(exc).__name__)
             return ""
 
     async def process_conversation_turn(
@@ -246,5 +255,5 @@ class MemoryService:
                     stored.append(rec)
         except Exception as exc:
             # Memory extraction must never break primary user flow
-            logger.warning("memory_processing_turn_failed", error=str(exc))
+            logger.warning("memory_processing_turn_failed", error_type=type(exc).__name__)
         return stored

@@ -59,176 +59,155 @@ public struct ChatMessageItem: Identifiable, Equatable, Sendable {
 @MainActor
 public final class ChatViewModel: ObservableObject {
     @Published public var messages: [ChatMessageItem] = []
-    @Published public var inputText: String = ""
-    @Published public var isSending: Bool = false
-    @Published public var errorMessage: String? = nil
-    @Published public var connectionState: String = "Bağlı"
-
+    @Published public var inputText = ""
+    @Published public var isSending = false
+    @Published public var errorMessage: String?
+    @Published public var connectionState = "Bağlantı bekleniyor"
     private let queueService = FirebaseCommandQueueService.shared
+    var onResponse: ((String) -> Void)?
+    var onFailure: ((String) -> Void)?
     private var inFlightCommandIds: Set<String> = []
+    private var activeAccount = ""
 
     public init() {
-        // Welcome message
-        messages.append(
-            ChatMessageItem(
-                sender: .jarvis,
-                text: "Merhaba! Ben Jarvis. Mac mini M4 üzerindeki yerel Qwen modelim ve Firebase Cloud Command Queue üzerinden hizmetinizdeyim. Bugün nasıl yardımcı olabilirim?"
-            )
-        )
+        messages = [ChatMessageItem(sender: .jarvis, text: "Merhaba! Bugün nasıl yardımcı olabilirim?")]
     }
 
-    /// Submit a message into the Cloud Command Queue and monitor execution states.
-    public func sendMessage(userId: String = "user_fatih_01", projectId: String = "jarvis-local-dev") {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+    private func conversationId(userId: String, projectId: String) -> String {
+        let key = "jarvis_conversation.\(projectId).\(userId)"
+        if let id = UserDefaults.standard.string(forKey: key) { return id }
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }
 
+    public func sendMessage(userId: String, projectId: String) {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isSending, !userId.isEmpty else { return }
         inputText = ""
         isSending = true
         errorMessage = nil
-
-        let userMsg = ChatMessageItem(sender: .user, text: text)
-        messages.append(userMsg)
-
-        let jarvisMsgId = UUID()
-        let placeholderMsg = ChatMessageItem(
-            id: jarvisMsgId,
-            sender: .jarvis,
-            text: "",
-            status: .queued
-        )
-        messages.append(placeholderMsg)
-
+        let commandId = UUID().uuidString
+        messages.append(ChatMessageItem(sender: .user, text: text))
+        let message = ChatMessageItem(sender: .jarvis, text: "", status: .queued, commandId: commandId)
+        messages.append(message)
+        inFlightCommandIds.insert(commandId)
         Task {
+            defer { inFlightCommandIds.remove(commandId); isSending = false }
             do {
-                // 1. Submit to user-scoped Firestore commands queue
-                let commandId = try await queueService.submitChatCommand(
-                    message: text,
-                    userId: userId,
-                    projectId: projectId
+                _ = try await queueService.submitChatCommand(
+                    message: text, conversationId: conversationId(userId: userId, projectId: projectId),
+                    userId: userId, projectId: projectId,
+                    existingCommandId: commandId, existingIdempotencyKey: commandId
                 )
-
-                if let idx = self.messages.firstIndex(where: { $0.id == jarvisMsgId }) {
-                    self.messages[idx].commandId = commandId
-                }
-
-                // 2. Poll for lifecycle status transitions
-                let completedCmd = try await queueService.pollCommand(
-                    commandId: commandId,
-                    userId: userId,
-                    projectId: projectId,
-                    timeoutSeconds: 60.0
-                ) { [weak self] status, resultData in
-                    guard let self = self else { return }
-                    if let idx = self.messages.firstIndex(where: { $0.id == jarvisMsgId }) {
-                        switch status {
-                        case .queued:
-                            self.messages[idx].status = .queued
-                        case .leased, .running:
-                            self.messages[idx].status = .running
-                        case .waitingApproval:
-                            self.messages[idx].status = .waitingApproval
-                            if let res = resultData {
-                                let appID = (res["approval_id"] as? String) ?? ""
-                                let tool = (res["pending_tool"] as? String) ?? "Eylem"
-                                var argsMap: [String: String] = [:]
-                                if let args = res["arguments"] as? [String: Any] {
-                                    for (k, v) in args {
-                                        argsMap[k] = "\(v)"
-                                    }
-                                }
-                                let digest = res["action_digest"] as? String
-                                self.messages[idx].approvalData = PendingApprovalData(
-                                    approvalId: appID,
-                                    pendingTool: tool,
-                                    arguments: argsMap,
-                                    actionDigest: digest
-                                )
-                                self.messages[idx].text = "⚠️ Bu işlem human-in-the-loop onayı gerektiriyor: \(tool)"
-                            }
-                        case .completed:
-                            self.messages[idx].status = .completed
-                        case .failed:
-                            self.messages[idx].status = .failed
-                        default:
-                            break
-                        }
-                    }
-                }
-
-                // 3. Command Finalized
-                if let idx = self.messages.firstIndex(where: { $0.id == jarvisMsgId }) {
-                    if completedCmd.status == .completed {
-                        if let resObj = completedCmd.result, let responseText = resObj["response"]?.value as? String {
-                            self.messages[idx].text = responseText
-                            self.messages[idx].status = .completed
-                        } else if let dataObj = completedCmd.result?["data"]?.value {
-                            self.messages[idx].text = "İşlem sonucu: \(dataObj)"
-                            self.messages[idx].status = .completed
-                        } else {
-                            self.messages[idx].text = "Komut başarıyla tamamlandı ancak beklenen yanıt formatı çözümlenemedi."
-                            self.messages[idx].status = .failed
-                        }
-                    } else if completedCmd.status == .waitingApproval {
-                        // Already handled in status callback
-                    } else {
-                        self.messages[idx].text = completedCmd.error ?? "Komut yürütme başarısız oldu."
-                        self.messages[idx].status = .failed
-                    }
-                }
-
-            } catch {
-                if let idx = self.messages.firstIndex(where: { $0.id == jarvisMsgId }) {
-                    self.messages[idx].status = .failed
-                    self.messages[idx].text = "⚠️ Hata: \(error.localizedDescription)"
-                }
-                self.errorMessage = error.localizedDescription
-                self.connectionState = "Bağlantı Kesildi"
-            }
-            self.isSending = false
+                try await monitor(commandId: commandId, messageId: message.id, userId: userId, projectId: projectId)
+            } catch { showError(error, messageId: message.id) }
         }
     }
 
-    /// Submit an approval response directly from a chat card.
-    public func respondToApproval(
-        messageId: UUID,
-        approvalId: String,
-        decision: String,
-        actionDigest: String?,
-        userId: String = "user_fatih_01",
-        projectId: String = "jarvis-local-dev"
-    ) {
+    private func apply(status: CommandStatusDTO, result: [String: Any]?, messageId: UUID) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        messages[idx].status = .running
-        messages[idx].text = decision == "approved" ? "Onay iletildi, eylem yürütülüyor..." : "İşlem reddedildi."
-
-        Task {
-            do {
-                let cmdId = try await queueService.submitApprovalResponse(
-                    approvalId: approvalId,
-                    decision: decision,
-                    actionDigest: actionDigest,
-                    userId: userId,
-                    projectId: projectId
-                )
-
-                let finalCmd = try await queueService.pollCommand(
-                    commandId: cmdId,
-                    userId: userId,
-                    projectId: projectId
-                ) { _, _ in }
-
-                if let res = finalCmd.result, let resp = res["response"]?.value as? String {
-                    self.messages[idx].text = resp
-                    self.messages[idx].status = .completed
-                } else {
-                    self.messages[idx].text = finalCmd.error ?? "İşlem sonuçlandı."
-                    self.messages[idx].status = finalCmd.status == .completed ? .completed : .failed
-                }
-                self.messages[idx].approvalData = nil
-            } catch {
-                self.messages[idx].status = .failed
-                self.messages[idx].text = "Onay gönderilemedi: \(error.localizedDescription)"
+        switch status {
+        case .queued: messages[idx].status = .queued
+        case .leased, .running: messages[idx].status = .running
+        case .waitingApproval:
+            messages[idx].status = .waitingApproval
+            guard let result, let id = result["approval_id"] as? String,
+                  let digest = result["action_digest"] as? String, !id.isEmpty, !digest.isEmpty else {
+                messages[idx].status = .failed
+                messages[idx].text = "Onay ayrıntıları doğrulanamadı."
+                return
             }
+            let tool = result["pending_tool"] as? String ?? "Eylem"
+            let args = (result["arguments"] as? [String: Any] ?? [:]).mapValues { String(describing: $0) }
+            messages[idx].approvalData = PendingApprovalData(approvalId: id, pendingTool: tool, arguments: args, actionDigest: digest)
+            messages[idx].text = "Bu işlem onayınızı gerektiriyor: \(tool)"
+        case .completed:
+            messages[idx].approvalData = nil
+            if let response = result?["response"] as? String {
+                messages[idx].text = response
+                messages[idx].status = .completed
+            } else if let data = result?["data"] {
+                messages[idx].text = "İşlem sonucu: \(data)"
+                messages[idx].status = .completed
+            } else {
+                messages[idx].text = "Sonuç ayrıntıları alınamadı. İşlemi tekrarlamadan önce kontrol edin."
+                messages[idx].status = .failed
+            }
+        case .failed, .cancelled, .expired:
+            messages[idx].status = .failed
+            messages[idx].approvalData = nil
+        }
+    }
+
+    private func monitor(commandId: String, messageId: UUID, userId: String, projectId: String) async throws {
+        let final = try await queueService.pollCommand(commandId: commandId, userId: userId, projectId: projectId) { [weak self] status, result in
+            self?.apply(status: status, result: result, messageId: messageId)
+        }
+        connectionState = "Bağlı"
+        if final.status == .completed, let text = final.result?["response"]?.value as? String { onResponse?(text) }
+    }
+
+    private func showError(_ error: Error, messageId: UUID) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        messages[idx].status = .failed
+        messages[idx].text = "Sonuç alınamadı: \(error.localizedDescription) Uygulama tekrar açıldığında aynı isteğin durumu kontrol edilir."
+        errorMessage = error.localizedDescription
+        connectionState = "Bağlantı kontrol edilmeli"
+        onFailure?(error.localizedDescription)
+    }
+
+    /// Resume reads after restart/foreground; never resubmit an uncertain write.
+    public func resumePending(userId: String, projectId: String) async {
+        guard !userId.isEmpty, !projectId.isEmpty else { return }
+        let account = "\(projectId).\(userId)"
+        if !activeAccount.isEmpty && activeAccount != account { messages.removeAll() }
+        activeAccount = account
+        for id in queueService.getPendingCommandIds(userId: userId, projectId: projectId) {
+            if inFlightCommandIds.contains(id) { continue }
+            inFlightCommandIds.insert(id)
+            defer { inFlightCommandIds.remove(id) }
+            do {
+                guard let existing = try await queueService.fetchCommandDocument(commandId: id, userId: userId, projectId: projectId) else {
+                    queueService.forgetPendingCommand(id, userId: userId, projectId: projectId)
+                    continue
+                }
+                let messageId: UUID
+                if let message = messages.first(where: { $0.commandId == id }) { messageId = message.id }
+                else {
+                    let message = ChatMessageItem(sender: .jarvis, text: "Önceki isteğin sonucu kontrol ediliyor…", status: .queued, commandId: id)
+                    messages.append(message)
+                    messageId = message.id
+                    if let text = existing.payload["input"]?.value as? String {
+                        messages.insert(ChatMessageItem(sender: .user, text: text), at: max(0, messages.count - 1))
+                    }
+                }
+                try await monitor(commandId: id, messageId: messageId, userId: userId, projectId: projectId)
+            } catch {
+                connectionState = "Bağlantı kontrol edilmeli"
+            }
+        }
+    }
+
+    public func respondToApproval(messageId: UUID, approvalId: String, decision: String, actionDigest: String?, userId: String, projectId: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }),
+              messages[idx].status == .waitingApproval, let actionDigest, !userId.isEmpty else { return }
+        let originalId = messages[idx].commandId
+        let commandId = UUID().uuidString
+        messages[idx].approvalData = nil
+        messages[idx].status = .queued
+        messages[idx].commandId = commandId
+        messages[idx].text = "Karar iletiliyor…"
+        inFlightCommandIds.insert(commandId)
+        Task {
+            defer { inFlightCommandIds.remove(commandId) }
+            do {
+                _ = try await queueService.submitApprovalResponse(approvalId: approvalId, decision: decision,
+                    actionDigest: actionDigest, userId: userId, projectId: projectId,
+                    existingCommandId: commandId, existingIdempotencyKey: commandId)
+                if let originalId { queueService.forgetPendingCommand(originalId, userId: userId, projectId: projectId) }
+                try await monitor(commandId: commandId, messageId: messageId, userId: userId, projectId: projectId)
+            } catch { showError(error, messageId: messageId) }
         }
     }
 }

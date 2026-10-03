@@ -1,7 +1,7 @@
 import SwiftUI
 
 public struct SettingsView: View {
-    @StateObject private var viewModel = AuthViewModel()
+    @EnvironmentObject private var viewModel: AuthViewModel
     @State private var emailInput: String = ""
     @State private var passwordInput: String = ""
 
@@ -47,7 +47,7 @@ public struct SettingsView: View {
                         HStack {
                             Text("İmza Geçerlilik Süresi")
                             Spacer()
-                            Text("7 Gün (Otomatik Yenilemeli)")
+                            Text("Geçerlilik Mac üzerinden doğrulanır")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -57,7 +57,7 @@ public struct SettingsView: View {
                         HStack {
                             Text("Uygulama Sürümü")
                             Spacer()
-                            Text("Jarvis iOS 1.2 (Milestone 5.2)")
+                            Text("Jarvis iOS 1.3")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -121,6 +121,13 @@ public struct SettingsView: View {
                             }
                         }
                         .disabled(viewModel.isLoading || emailInput.isEmpty || passwordInput.isEmpty)
+                        Button("Yeni JARVIS hesabı oluştur") {
+                            Task {
+                                if await viewModel.signIn(email: emailInput, pass: passwordInput, createAccount: true) { passwordInput = "" }
+                            }
+                        }
+                        .disabled(viewModel.isLoading || emailInput.isEmpty || passwordInput.count < 6)
+
                     }
                 }
             }

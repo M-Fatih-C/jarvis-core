@@ -10,7 +10,6 @@ from core.llm.base import LLMAdapter
 from core.llm.mlx_adapter import QwenMLXAdapter
 from core.policy.engine import PolicyEngine
 from core.tools.executor import ToolExecutor
-from core.tools.mock import register_mock_tools
 from core.tools.registry import ToolRegistry
 
 _custom_llm_adapter: Optional[LLMAdapter] = None
@@ -42,7 +41,12 @@ def set_custom_runtime(runtime: Optional[AgentRuntime]) -> None:
 def get_tool_registry() -> ToolRegistry:
     """Create and populate standard tool registry."""
     registry = ToolRegistry()
-    register_mock_tools(registry)
+    from core.tools.native_macos.provider import register_apple_tools
+    from core.tools.memory_tools import MemorySearchTool
+    settings = get_settings()
+    register_apple_tools(registry, provider=settings.apple_integration_provider)
+    if settings.apple_integration_provider == "native_macos":
+        registry.register(MemorySearchTool(get_memory_service()))
     return registry
 
 
@@ -200,4 +204,24 @@ def _get_default_runtime() -> AgentRuntime:
         context_builder=ContextBuilder(),
         memory_service=get_memory_service(),
         settings=get_settings(),
+    )
+
+@lru_cache(maxsize=1)
+def get_gmail_pipeline() -> Any:
+    from core.email_analysis.analyzer import EmailAnalyzer
+    from core.email_analysis.task_extractor import TaskExtractor
+    from core.notifications.email_notifier import EmailNotificationService
+    from integrations.gmail.auth import GmailOAuthManager
+    from integrations.gmail.client import GmailClient
+    from integrations.gmail.sync import GmailSyncService
+    from integrations.gmail.pipeline import GmailProcessingPipeline
+    settings = get_settings()
+    storage = get_email_storage()
+    return GmailProcessingPipeline(
+        sync_service=GmailSyncService(GmailClient(GmailOAuthManager(settings=settings)), storage,
+                                     lookback_days=settings.gmail_sync_lookback_days,
+                                     max_messages_per_sync=settings.gmail_max_sync_messages),
+        analyzer=EmailAnalyzer(get_llm_adapter(), settings=settings, memory_service=get_memory_service()),
+        task_extractor=TaskExtractor(),
+        notifier=EmailNotificationService(storage, get_mac_bridge_client()), storage=storage,
     )

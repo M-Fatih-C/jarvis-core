@@ -136,8 +136,8 @@ class MemoryExtractor:
                                 if not any(c.predicate == cand.predicate and c.subject == cand.subject for c in candidates):
                                     candidates.append(cand)
                             except Exception as item_err:
-                                logger.debug("skipped_invalid_candidate_item", error=str(item_err))
+                                logger.debug("skipped_invalid_candidate_item", error_type=type(item_err).__name__)
             except Exception as exc:
-                logger.warning("llm_memory_extraction_failed", error=str(exc))
+                logger.warning("llm_memory_extraction_failed", error_type=type(exc).__name__)
 
         return candidates

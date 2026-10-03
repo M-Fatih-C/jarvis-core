@@ -86,11 +86,19 @@ class GmailClient:
                         raise GmailHistoryExpiredError(f"Gmail history cursor expired for {endpoint}")
                     raise GmailMessageNotFoundError(f"Requested Gmail resource not found: {endpoint}")
 
-                # Handle 429 Too Many Requests
-                if resp.status_code == 429:
+                # Gmail also reports per-user quota limits as HTTP 403.
+                quota_limited = False
+                if resp.status_code == 403:
+                    reasons = {e.get("reason") for e in resp.json().get("error", {}).get("errors", [])}
+                    quota_limited = bool(reasons & {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"})
+                if resp.status_code == 429 or quota_limited:
                     if retries >= self.max_retries:
                         raise GmailQuotaExceededError("Gmail API rate limit exceeded after maximum retries.")
                     delay = self.base_backoff * (2 ** retries) + random.uniform(0.1, 0.5)
+                    if quota_limited:
+                        delay = max(delay, 15 * (retries + 1))
+                    if resp.headers.get("Retry-After", "").isdigit():
+                        delay = min(60, max(delay, int(resp.headers["Retry-After"])))
                     logger.warning("gmail_rate_limited", delay=delay, attempt=retries + 1)
                     await asyncio.sleep(delay)
                     retries += 1

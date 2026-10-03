@@ -39,11 +39,48 @@ public enum AuthError: LocalizedError {
 
 /// Communicates with Firebase Authentication service to authenticate users, manage sessions, and refresh tokens.
 /// Fail-closed security: Never accepts fake development tokens or fabricated fallback sessions.
+@MainActor
 public final class FirebaseAuthService {
     public static let shared = FirebaseAuthService()
     private let session = URLSession.shared
+    private var refreshTask: Task<String, Error>?
 
     private init() {}
+
+    /// Refresh before expiry; Firestore still validates the signed token on every request.
+    public func validIDToken() async throws -> String {
+        let keys = KeychainHelper.shared
+        if let token = keys.read(key: "firebase_id_token") {
+            let parts = token.split(separator: ".")
+            if parts.count == 3 {
+                var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+                b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+                if let data = Data(base64Encoded: b64),
+                   let claims = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let exp = claims["exp"] as? Double, exp > Date().timeIntervalSince1970 + 120 {
+                    return token
+                }
+            }
+        }
+        if let existing = refreshTask { return try await existing.value }
+        guard let refresh = keys.read(key: "firebase_refresh_token"), !refresh.isEmpty else {
+            throw AuthError.unauthenticated
+        }
+        let expectedUID = keys.read(key: "firebase_user_uid")
+        let task = Task<String, Error> {
+            let renewed = try await self.refreshToken(refreshToken: refresh)
+            guard renewed.uid == expectedUID,
+                  keys.read(key: "firebase_refresh_token") == refresh else {
+                throw AuthError.unauthenticated
+            }
+            keys.save(key: "firebase_id_token", value: renewed.idToken)
+            if let next = renewed.refreshToken { keys.save(key: "firebase_refresh_token", value: next) }
+            return renewed.idToken
+        }
+        refreshTask = task
+        defer { refreshTask = nil }
+        return try await task.value
+    }
 
     /// Resolve Firebase API Key from GoogleService-Info.plist, Keychain, or environment.
     public func resolveApiKey(providedKey: String? = nil) -> String? {
@@ -63,7 +100,7 @@ public final class FirebaseAuthService {
 
     /// Authenticate against Firebase Auth Identity Toolkit API.
     /// Strictly fails closed on any authentication or network error.
-    public func authenticate(email: String, password: String, apiKey: String? = nil) async throws -> AuthSession {
+    public func authenticate(email: String, password: String, apiKey: String? = nil, createAccount: Bool = false) async throws -> AuthSession {
         guard let resolvedKey = resolveApiKey(providedKey: apiKey) else {
             throw AuthError.missingConfiguration(
                 "Firebase API anahtarı bulunamadı. Lütfen GoogleService-Info.plist ekleyin veya ayarlardan API anahtarı girin."
@@ -76,7 +113,8 @@ public final class FirebaseAuthService {
             "returnSecureToken": true
         ]
 
-        let endpoint = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=\(resolvedKey)"
+        let action = createAccount ? "signUp" : "signInWithPassword"
+        let endpoint = "https://identitytoolkit.googleapis.com/v1/accounts:\(action)?key=\(resolvedKey)"
         guard let url = URL(string: endpoint) else {
             throw AuthError.networkError("Geçersiz Auth uç noktası")
         }
@@ -134,7 +172,9 @@ public final class FirebaseAuthService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        let bodyString = "grant_type=refresh_token&refresh_token=\(refreshToken)"
+        var form = URLComponents()
+        form.queryItems = [URLQueryItem(name: "grant_type", value: "refresh_token"), URLQueryItem(name: "refresh_token", value: refreshToken)]
+        let bodyString = form.percentEncodedQuery ?? ""
         request.httpBody = bodyString.data(using: .utf8)
 
         let (data, response) = try await session.data(for: request)

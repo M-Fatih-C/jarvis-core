@@ -125,3 +125,48 @@ async def test_expired_lease_reclaimed_by_worker() -> None:
     assert leased.id == "cmd_crashed_worker"
     assert leased.lease_owner == "active_mac_02"
     assert leased.attempts == 2
+
+@pytest.mark.parametrize('decision', ['approved', 'rejected'])
+async def test_mobile_approval_uses_real_runtime_once(test_runtime, decision):
+    """Real worker/runtime/store integration; model and Apple tool are mocks."""
+    settings = Settings(firebase_enabled=True, jarvis_uid='synthetic-owner')
+    repo = InMemoryCommandRepository()
+    worker = CommandWorker(repo, test_runtime, settings=settings)
+    await repo.create(CloudCommand(id='ask', user_id='synthetic-owner', name='chat', type='agent_run',
+        source_device='synthetic-phone', idempotency_key='ask',
+        payload={'input': "Yarın saat 19'da test çalışmayı hatırlat.", 'conversation_id': 'shared'}))
+    proposed = await worker.poll_once()
+    assert proposed.status == CommandStatus.WAITING_APPROVAL
+    approval_id = proposed.result['approval_id']
+    payload = {'approval_id': approval_id, 'decision': decision, 'action_digest': proposed.result['action_digest']}
+    await repo.create(CloudCommand(id='decision', user_id='synthetic-owner', name='approval', type='approval_response',
+        source_device='synthetic-phone', idempotency_key='decision', payload=payload))
+    result = await worker.poll_once()
+    assert result.status == CommandStatus.COMPLETED
+    from uuid import UUID
+    req = test_runtime.approval_store.get(UUID(approval_id))
+    run = test_runtime.get_run(req.agent_run_id)
+    assert run.tool_call_count == (1 if decision == 'approved' else 0)
+    assert len(test_runtime._conversations[('synthetic-owner', 'shared')]) == 2
+    await repo.create(CloudCommand(id='replay', user_id='synthetic-owner', name='approval', type='approval_response',
+        source_device='synthetic-phone', idempotency_key='replay', payload=payload))
+    assert (await worker.poll_once()).status == CommandStatus.FAILED
+
+
+async def test_production_identity_cannot_be_claimed_in_payload(test_runtime):
+    repo = InMemoryCommandRepository()
+    worker = CommandWorker(repo, test_runtime, settings=Settings(firebase_enabled=True, jarvis_uid='owner'))
+    await repo.create(CloudCommand(id='forged', name='chat', type='agent_run', source_device='phone',
+        idempotency_key='forged', payload={'user_id':'owner', 'input':'hello'}))
+    assert (await worker.poll_once()).status == CommandStatus.FAILED
+
+async def test_verbal_approval_request_repairs_to_secure_card(test_runtime):
+    from core.llm.schemas import LLMResponse
+    from core.models.tools import ToolCall
+    from core.agent.state_machine import AgentState
+    test_runtime._llm.queue_response(LLMResponse(content='Onayınızı bekliyorum.'))
+    test_runtime._llm.queue_response(LLMResponse(tool_calls=[ToolCall(id='proposal', name='reminders.create', arguments={'title':'Synthetic test'})]))
+    run = await test_runtime.run('Create a synthetic test reminder', user_id='synthetic-owner')
+    assert run.state == AgentState.WAITING_APPROVAL
+    assert run.tool_call_count == 0
+    assert test_runtime.approval_store.get(run.pending_approval_id).user_id == 'synthetic-owner'

@@ -68,7 +68,8 @@ class DeviceMonitor:
                 reachable = (
                     pairing_state == "paired"
                     and dev_mode
-                    and transport in ("wired", "wifi", "local", "network")
+                    and transport in ("wired", "wifi", "local", "network", "localNetwork")
+                    and conn_props.get("tunnelState", "connected") != "unavailable"
                 )
 
                 info = DeviceInfo(

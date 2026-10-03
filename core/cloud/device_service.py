@@ -19,8 +19,10 @@ class DeviceService:
         self,
         repository: DeviceRepository | None = None,
         settings: Settings | None = None,
+        health_provider=None,
     ) -> None:
         self._settings = settings or get_settings()
+        self._health_provider = health_provider
         self._repo = repository or InMemoryDeviceRepository()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._running = False
@@ -40,6 +42,9 @@ class DeviceService:
             capabilities=["local_llm", "memory", "tool_execution"],
             last_seen_at=datetime.now(timezone.utc),
         )
+        if self._health_provider:
+            record.health = await self._health_provider()
+            record.status = DeviceStatus.ONLINE if all(record.health.get(k) for k in ("model_ready", "mac_agent_connected", "worker_running")) else DeviceStatus.DEGRADED
         saved = await self._repo.register_or_update(record)
         logger.info("device_registered", device_id=saved.device_id, status=saved.status.value)
         return saved
@@ -55,7 +60,10 @@ class DeviceService:
         interval = max(5, self._settings.device_heartbeat_interval_seconds)
         while self._running:
             try:
-                await self.beat(status=DeviceStatus.ONLINE)
+                if self._health_provider:
+                    await self.register_self()
+                elif not await self.beat(status=DeviceStatus.ONLINE):
+                    await self.register_self()
             except Exception as exc:
                 logger.warning("device_heartbeat_failed", error=str(exc))
             await asyncio.sleep(interval)
@@ -64,7 +72,10 @@ class DeviceService:
         """Register device and start background heartbeat loop."""
         if self._running:
             return
-        await self.register_self()
+        try:
+            await self.register_self()
+        except Exception as exc:
+            logger.warning("device_registration_deferred", error_type=type(exc).__name__)
         self._running = True
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info("device_service_started")

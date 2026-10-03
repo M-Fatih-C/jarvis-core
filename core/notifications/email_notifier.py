@@ -128,7 +128,7 @@ class EmailNotificationService:
             )
 
         # Format notification contents concisely
-        clean_subject = (email.subject[:60] + "...") if len(email.subject) > 60 else email.subject
+        clean_subject = "Önemli e-posta"
         if analysis.importance == ImportanceLevel.HIGH:
             title = f"🔴 Jarvis: {clean_subject}"
         elif analysis.has_deadline:
@@ -136,14 +136,17 @@ class EmailNotificationService:
         else:
             title = f"📬 Jarvis: {clean_subject}"
 
-        body_prefix = f"Gönderen: {email.sender_email or email.sender}\n"
-        clean_summary = sanitize_notification_body(analysis.summary)
-        body = f"{body_prefix}{clean_summary}"
+        body = "İş, eğitim, ödeme veya son tarih içeren bir e-posta var. Ayrıntıları Jarvis içinde inceleyin."
         if len(body) > 300:
             body = body[:297] + "..."
 
         notification_id = f"gmail_{email.message_id}"
         task_id_str = str(task.task_id) if task else None
+
+        if not self.bridge_client:
+            return NotificationDispatchResult(False, "bridge_failed", "Native notification bridge is unavailable")
+        if not await self.storage.claim_notification(notification_id, email.message_id, title, task_id_str):
+            return NotificationDispatchResult(False, "skipped_duplicate", "Delivery already attempted")
 
         if self.bridge_client:
             try:
@@ -158,6 +161,7 @@ class EmailNotificationService:
                 )
                 # Verify that delivery actually succeeded
                 if isinstance(res, dict) and res.get("status") in ("denied", "not_authorized", "failed"):
+                    await self.storage.release_notification(notification_id)
                     logger.warning("native_notification_permission_unavailable", status=res.get("status"))
                     return NotificationDispatchResult(
                         dispatched=False,
@@ -165,7 +169,10 @@ class EmailNotificationService:
                         reason=f"macOS notification permission is {res.get('status')}",
                     )
 
-                logger.info("email_notification_dispatched", msg_id=email.message_id, title=title)
+                if not isinstance(res, dict) or res.get("delivered") is not True:
+                    return NotificationDispatchResult(False, "bridge_failed", "Native delivery was not confirmed")
+
+                logger.info("email_notification_dispatched", msg_id=email.message_id)
             except Exception as exc:
                 logger.warning("email_notification_bridge_failed", error=str(exc))
                 return NotificationDispatchResult(
@@ -173,21 +180,8 @@ class EmailNotificationService:
                     status="bridge_failed",
                     reason=str(exc),
                 )
-        else:
-            # Mock / headless environment without active bridge connection
-            logger.info("email_notification_recorded_mock", msg_id=email.message_id, title=title)
-
-        # Record notification to prevent duplicate future alerts
-        await self.storage.record_sent_notification(
-            notification_id=notification_id,
-            message_id=email.message_id,
-            title=title,
-            task_id=task_id_str,
-        )
-
         return NotificationDispatchResult(
             dispatched=True,
             status="delivered",
             notification_id=notification_id,
         )
-

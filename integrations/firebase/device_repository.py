@@ -38,6 +38,7 @@ class FirestoreDeviceRepository(DeviceRepository):
             "status": dev.status.value,
             "app_version": dev.app_version,
             "capabilities": dev.capabilities,
+            "health": dev.health,
             "last_seen_at": dev.last_seen_at.isoformat(),
             "created_at": dev.created_at.isoformat(),
         }
@@ -58,6 +59,7 @@ class FirestoreDeviceRepository(DeviceRepository):
             status=DeviceStatus(data.get("status", DeviceStatus.ONLINE.value)),
             app_version=data.get("app_version"),
             capabilities=data.get("capabilities", []),
+            health=data.get("health", {}),
             last_seen_at=last_seen,
             created_at=created,
         )

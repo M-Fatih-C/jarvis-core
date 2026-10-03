@@ -88,6 +88,7 @@ async def test_full_gmail_e2e_pipeline_and_task_boundary(memory_storage: EmailSt
     analyzer = EmailAnalyzer(llm_adapter=llm)
     task_extractor = TaskExtractor()
     mock_bridge = AsyncMock(spec=MacBridgeClient)
+    mock_bridge.call.return_value = {"delivered": True}
     notifier = EmailNotificationService(storage=memory_storage, bridge_client=mock_bridge)
 
     pipeline = GmailProcessingPipeline(
@@ -126,7 +127,8 @@ async def test_full_gmail_e2e_pipeline_and_task_boundary(memory_storage: EmailSt
     assert mock_bridge.call.call_count == 1
     call_name, call_payload = mock_bridge.call.call_args[0]
     assert call_name == "notifications.show"
-    assert "Üniversite Kayıt Yenileme Bildirimi" in call_payload["title"]
+    assert "Üniversite Kayıt Yenileme Bildirimi" not in call_payload["title"]
+    assert "Önemli e-posta" in call_payload["title"]
 
     # 8. Boundary Verification: Zero Automatic Calendar / Reminder Mutations
     # Milestone 4.1 must NOT automatically call calendar.create_event or reminders.create

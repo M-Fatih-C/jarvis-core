@@ -57,3 +57,7 @@ personal_vault*.json
 *memory*.db
 *memory*.db-wal
 *memory*.db-shm
+
+# Local Firebase configuration and CLI diagnostics
+GoogleService-Info.plist
+firebase-debug.log

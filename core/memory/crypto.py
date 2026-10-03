@@ -104,13 +104,13 @@ class MemoryEncryptor:
         associated_data: bytes | None = None,
     ) -> dict[str, Any]:
         """Encrypt plaintext into AES-256-GCM ciphertext with random 96-bit nonce.
-        
+
         Args:
             plaintext: Cleartext string to encrypt.
             key: 32-byte AES key.
             key_version: Incremental version integer.
             associated_data: Optional AAD bytes (e.g. record_id:schema_version) bound to ciphertext.
-            
+
         Returns:
             Dictionary with ciphertext, nonce, algorithm, and key_version.
         """
@@ -121,16 +121,19 @@ class MemoryEncryptor:
             aesgcm = AESGCM(key)
             nonce = os.urandom(12)  # 96 bits recommended for GCM
             data_bytes = plaintext.encode("utf-8")
-            ciphertext_bytes = aesgcm.encrypt(nonce, data_bytes, associated_data)
+            aad = associated_data if associated_data is not None else b"jarvis:memory:v1"
+            ciphertext_bytes = aesgcm.encrypt(nonce, data_bytes, aad)
 
             payload = {
                 "ciphertext": base64.b64encode(ciphertext_bytes).decode("ascii"),
                 "nonce": base64.b64encode(nonce).decode("ascii"),
                 "algorithm": "AES-256-GCM",
                 "key_version": key_version,
+                "schema_version": 1,
+                "aad_bound": True,
             }
-            if associated_data is not None:
-                payload["aad_bound"] = True
+            if associated_data is None:
+                payload["aad_scope"] = "standalone"
             return payload
         except Exception as exc:
             logger.error("encryption_failed", error=str(exc))
@@ -143,7 +146,13 @@ class MemoryEncryptor:
         key: bytes,
         associated_data: bytes | None = None,
     ) -> str:
-        """Decrypt AES-256-GCM payload and return raw decrypted string."""
+        """Decrypt AES-256-GCM payload and return raw decrypted string.
+
+        Strictly enforces AAD validation: if a payload is AAD-bound (or schema_version >= 1 with record_id),
+        it MUST be decrypted with the bound AAD. If authentication fails, it NEVER falls
+        back to unbound decryption. Unbound legacy payloads are supported ONLY if explicitly
+        marked with legacy schema_version == 0 and aad_bound is False.
+        """
         if len(key) != 32:
             raise CryptoError(f"Invalid key length: expected 32 bytes, got {len(key)}")
 
@@ -156,32 +165,42 @@ class MemoryEncryptor:
             payload = encrypted_payload
 
         try:
-            ciphertext = base64.b64decode(payload["ciphertext"].encode("ascii"))
-            nonce = base64.b64decode(payload["nonce"].encode("ascii"))
+            if payload.get("algorithm") != "AES-256-GCM":
+                raise CryptoError("Unsupported encryption algorithm")
+            ciphertext = base64.b64decode(payload["ciphertext"], validate=True)
+            nonce = base64.b64decode(payload["nonce"], validate=True)
             aesgcm = AESGCM(key)
+            schema_version = payload.get("schema_version")
+            is_legacy_unbound = (
+                payload.get("aad_bound") is False
+                and associated_data is None
+                and type(schema_version) is int and schema_version == 0
+                and not payload.get("record_id")
+            )
+            if is_legacy_unbound:
+                aad = None
+            else:
+                if payload.get("aad_bound") is not True or type(schema_version) is not int or schema_version < 1:
+                    raise CryptoError("Unidentified legacy or invalid AAD envelope")
+                aad = associated_data
+                if aad is None and payload.get("record_id"):
+                    aad = f"{payload['record_id']}:{schema_version}".encode("utf-8")
+                if aad is None and payload.get("aad_scope") == "standalone":
+                    aad = b"jarvis:memory:v1"
+                if aad is None:
+                    raise CryptoError("AAD-bound record is missing required authentication data")
 
-            # Determine AAD: if not explicitly provided, derive from bound payload metadata if available
-            aad_to_try = associated_data
-            if aad_to_try is None and payload.get("aad_bound") and payload.get("record_id"):
-                rec_id = payload["record_id"]
-                sch_ver = payload.get("schema_version", 1)
-                aad_to_try = f"{rec_id}:{sch_ver}".encode("utf-8")
-
-            # Try decrypting with aad_to_try first
-            decrypted_bytes: bytes
+            # Decrypt strictly with AAD - NEVER fall back or retry without AAD
             try:
-                decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, aad_to_try)
-            except Exception:
-                # Fallback to None if not aad_bound or if trying with aad failed
-                if aad_to_try is not None:
-                    decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, None)
-                else:
-                    raise
-
-            return decrypted_bytes.decode("utf-8")
+                decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, aad)
+                return decrypted_bytes.decode("utf-8")
+            except Exception as exc:
+                raise CryptoError("Strict AES-GCM decryption failed (AAD or authentication tag mismatch)") from exc
+        except CryptoError:
+            raise
         except Exception as exc:
-            logger.error("decryption_failed", error=str(exc))
-            raise CryptoError(f"Decryption failed or invalid key/tag: {exc}") from exc
+            raise CryptoError("Invalid encrypted envelope") from exc
+
 
     @classmethod
     def decrypt(
@@ -209,6 +228,8 @@ class MemoryEncryptor:
         schema_version: int = 1,
     ) -> dict[str, Any]:
         """Encrypt all sensitive attributes into a single unified AES-256-GCM payload."""
+        if not record_id or schema_version < 1:
+            raise CryptoError("New PRIVATE records require a record ID and current schema")
         plaintext = json.dumps(data, ensure_ascii=False)
         aad = f"{record_id}:{schema_version}".encode("utf-8") if record_id else None
         res = cls.encrypt(plaintext, key, key_version=1, associated_data=aad)

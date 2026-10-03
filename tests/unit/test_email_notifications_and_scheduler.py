@@ -73,6 +73,7 @@ def test_notification_importance_filtering(memory_storage: EmailStorage) -> None
 @pytest.mark.asyncio
 async def test_notification_dispatch_and_deduplication(memory_storage: EmailStorage) -> None:
     mock_bridge = AsyncMock(spec=MacBridgeClient)
+    mock_bridge.call.return_value = {"delivered": True}
     service = EmailNotificationService(storage=memory_storage, bridge_client=mock_bridge)
 
     email = NormalizedEmail(
@@ -110,6 +111,7 @@ async def test_notification_dispatch_and_deduplication(memory_storage: EmailStor
 @pytest.mark.asyncio
 async def test_notification_degraded_when_permission_unavailable(memory_storage: EmailStorage) -> None:
     mock_bridge = AsyncMock(spec=MacBridgeClient)
+    mock_bridge.call.return_value = {"delivered": True}
     # Bridge returns denied permission
     mock_bridge.call.return_value = {"status": "denied", "delivered": False}
     service = EmailNotificationService(storage=memory_storage, bridge_client=mock_bridge)
@@ -171,3 +173,40 @@ def test_scheduler_missed_sync_recovery() -> None:
     # But between 11:00 and 12:00 today, no scheduled sync occurred
     today_12 = datetime(2026, 10, 1, 12, 0, tzinfo=tz)
     assert scheduler.has_missed_sync(today_11, today_12) is False
+
+async def test_schedule_survives_restart_and_retries_failure(tmp_path):
+    from integrations.gmail.pipeline import GmailPipelineResult
+    from types import SimpleNamespace
+    pipeline = SimpleNamespace(storage=SimpleNamespace(_db_path=str(tmp_path/'schedule.db')),
+                               run=AsyncMock(return_value=GmailPipelineResult()))
+    scheduler = EmailSyncScheduler(pipeline, enabled=True)
+    tz = scheduler._get_tz()
+    start = datetime(2026, 10, 3, 9, 1, tzinfo=tz)
+    await scheduler.tick(start)
+    restarted = EmailSyncScheduler(pipeline, enabled=True)
+    assert await restarted.tick(datetime(2026,10,3,10,0,tzinfo=tz)) is None
+    failed = GmailPipelineResult(); failed.errors = ['synthetic network failure']
+    pipeline.run.return_value = failed
+    await restarted.tick(datetime(2026,10,3,20,1,tzinfo=tz))
+    assert restarted.last_run == start
+    pipeline.run.return_value = GmailPipelineResult()
+    await restarted.tick(datetime(2026,10,3,20,2,tzinfo=tz))
+    assert pipeline.run.await_count == 3
+
+@pytest.mark.asyncio
+async def test_notification_uncertain_delivery_is_not_replayed_after_restart(tmp_path):
+    from datetime import datetime, timezone
+    bridge = AsyncMock(spec=MacBridgeClient)
+    bridge.call.side_effect = TimeoutError('Synthetic timeout after possible delivery')
+    path = str(tmp_path / 'mail.db')
+    first = EmailStorage(db_path=path)
+    email = NormalizedEmail(message_id='synthetic-uncertain', thread_id='t', sender='sender@example.test', recipient='user@example.test', subject='Synthetic', received_at=datetime.now(timezone.utc), content_hash='hash')
+    analysis = EmailAnalysisResult(category=EmailCategory.WORK_CAREER, importance=ImportanceLevel.HIGH, summary='Synthetic', proposed_action='Review')
+    result = await EmailNotificationService(first, bridge).notify_if_important(email, analysis)
+    assert result.status == 'bridge_failed'
+    first.close()
+    second = EmailStorage(db_path=path)
+    result = await EmailNotificationService(second, bridge).notify_if_important(email, analysis)
+    assert result.status == 'skipped_duplicate'
+    assert bridge.call.await_count == 1
+    second.close()

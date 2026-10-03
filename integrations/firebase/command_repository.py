@@ -34,6 +34,7 @@ class FirestoreCommandRepository(CommandRepository):
     def _cmd_to_doc(self, cmd: CloudCommand) -> dict[str, Any]:
         return {
             "id": cmd.id,
+            "user_id": cmd.user_id or self._uid,
             "type": cmd.type,
             "name": cmd.name,
             "source_device": cmd.source_device,
@@ -78,6 +79,7 @@ class FirestoreCommandRepository(CommandRepository):
 
         return CloudCommand(
             id=data["id"],
+            user_id=data.get("user_id"),
             type=data.get("type", "tool_execution"),
             name=data["name"],
             source_device=data.get("source_device", "unknown"),
@@ -119,61 +121,74 @@ class FirestoreCommandRepository(CommandRepository):
         return command
 
     async def update(self, command: CloudCommand, expected_revision: int | None = None) -> CloudCommand:
+        from google.cloud import firestore
         doc_ref = self._get_collection().document(command.id)
-        snap = await doc_ref.get()
-        if not snap.exists:
-            raise ValueError(f"Command {command.id} not found in Firestore")
+        expected = command.revision if expected_revision is None else expected_revision
 
-        curr = snap.to_dict()
-        curr_rev = int(curr.get("revision", 1))
+        @firestore.async_transactional
+        async def commit(transaction):
+            snap = await doc_ref.get(transaction=transaction)
+            if not snap.exists:
+                raise ValueError("Command not found")
+            if int(snap.to_dict().get("revision", 1)) != expected:
+                raise CommandConflictError("Command changed during execution")
+            updated = command.model_copy(update={"revision": expected + 1})
+            transaction.set(doc_ref, self._cmd_to_doc(updated))
+            return updated
 
-        if expected_revision is not None and curr_rev != expected_revision:
-            raise CommandConflictError(
-                f"Firestore command conflict for {command.id}: expected {expected_revision}, got {curr_rev}"
-            )
-
-        command.revision = curr_rev + 1
-        await doc_ref.set(self._cmd_to_doc(command))
-        return command
+        return await commit(self._client_provider.get_client().transaction())
 
     async def lease_next_command(self, worker_id: str, lease_duration_seconds: int = 60) -> CloudCommand | None:
+        from google.cloud import firestore
+        import hashlib
         col = self._get_collection()
-        now = datetime.now(timezone.utc)
+        snapshots = await col.where("status", "in", ["queued", "leased", "running"]).get()
+        snapshots.sort(key=lambda snap: str(snap.to_dict().get("created_at", "")))
+        for candidate in snapshots:
+            ref = candidate.reference
 
-        # 1. Check QUEUED commands
-        queued_snaps = await col.where("status", "==", CommandStatus.QUEUED.value).limit(10).get()
-        eligible: list[CloudCommand] = []
+            @firestore.async_transactional
+            async def claim(transaction):
+                snap = await ref.get(transaction=transaction)
+                if not snap.exists:
+                    return None
+                cmd = self._doc_to_cmd(snap.to_dict())
+                now = datetime.now(timezone.utc)
+                if cmd.target_device and cmd.target_device != worker_id:
+                    return None
+                if cmd.status not in (CommandStatus.QUEUED, CommandStatus.LEASED, CommandStatus.RUNNING):
+                    return None
+                if cmd.status != CommandStatus.QUEUED and (not cmd.lease_expires_at or cmd.lease_expires_at > now):
+                    return None
+                if cmd.status == CommandStatus.RUNNING:
+                    # An interrupted external mutation has an uncertain outcome.
+                    # Never replay it automatically after sleep/process death.
+                    transaction.update(ref, {"status": "failed", "error": "Execution interrupted; verify the previous result before requesting another action.", "revision": cmd.revision + 1})
+                    return None
+                if cmd.expires_at and cmd.expires_at <= now:
+                    transaction.update(ref, {"status": "expired", "revision": cmd.revision + 1})
+                    return None
+                if cmd.available_at > now:
+                    return None
+                key_id = hashlib.sha256(cmd.idempotency_key.encode()).hexdigest()
+                key_ref = col.parent.collection("command_keys").document(key_id)
+                key_snap = await key_ref.get(transaction=transaction)
+                if key_snap.exists and key_snap.to_dict().get("command_id") != cmd.id:
+                    transaction.update(ref, {"status": "failed", "error": "Duplicate idempotency key", "revision": cmd.revision + 1})
+                    return None
+                cmd.status = CommandStatus.LEASED
+                cmd.lease_owner = worker_id
+                cmd.lease_expires_at = now + timedelta(seconds=lease_duration_seconds)
+                cmd.attempts += 1
+                cmd.revision += 1
+                transaction.set(key_ref, {"command_id": cmd.id})
+                transaction.set(ref, self._cmd_to_doc(cmd))
+                return cmd
 
-        for s in queued_snaps:
-            cmd = self._doc_to_cmd(s.to_dict())
-            if cmd.expires_at and cmd.expires_at < now:
-                continue
-            if cmd.available_at <= now:
-                eligible.append(cmd)
-
-        # 2. Check expired leased/running commands if none queued
-        if not eligible:
-            leased_snaps = await col.where("status", "in", [CommandStatus.LEASED.value, CommandStatus.RUNNING.value]).limit(10).get()
-            for s in leased_snaps:
-                cmd = self._doc_to_cmd(s.to_dict())
-                if cmd.lease_expires_at and cmd.lease_expires_at < now:
-                    eligible.append(cmd)
-
-        if not eligible:
-            return None
-
-        eligible.sort(key=lambda c: (c.available_at, c.created_at))
-        target = eligible[0]
-
-        target.status = CommandStatus.LEASED
-        target.lease_owner = worker_id
-        target.lease_expires_at = now + timedelta(seconds=lease_duration_seconds)
-        target.attempts += 1
-        target.revision += 1
-
-        doc_ref = col.document(target.id)
-        await doc_ref.set(self._cmd_to_doc(target))
-        return target
+            leased = await claim(self._client_provider.get_client().transaction())
+            if leased:
+                return leased
+        return None
 
     async def list(self, status: CommandStatus | None = None) -> list[CloudCommand]:
         col = self._get_collection()

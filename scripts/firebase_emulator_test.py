@@ -231,6 +231,26 @@ async def run_emulator_tests(require_emulator: bool = False) -> None:
     assert completed_cmd.status == CommandStatus.COMPLETED
     print("  -> PASS: Command marked COMPLETED with result payload.")
 
+    # Two workers cannot claim the same queued command.
+    race = CloudCommand(id="lease-race", name="system.get_status", source_device="ios", idempotency_key="race-key")
+    await cmd_repo.create(race)
+    claims = await asyncio.gather(cmd_repo.lease_next_command("mac-a"), cmd_repo.lease_next_command("mac-b"))
+    assert sum(claim is not None for claim in claims) == 1
+    from datetime import timedelta
+    claimed = next(claim for claim in claims if claim is not None)
+    claimed.status = CommandStatus.RUNNING
+    claimed.lease_expires_at = now - timedelta(seconds=1)
+    await cmd_repo.update(claimed)
+    assert await cmd_repo.lease_next_command("mac-a") is None
+    assert (await cmd_repo.get(race.id)).status == CommandStatus.FAILED
+
+    # Even a client that creates another document with the same key cannot replay it.
+    duplicate = race.model_copy(update={"id": "replayed-race", "status": CommandStatus.QUEUED})
+    await cmd_repo._get_collection().document(duplicate.id).set(cmd_repo._cmd_to_doc(duplicate))
+    assert await cmd_repo.lease_next_command("mac-a") is None
+    assert (await cmd_repo.get(duplicate.id)).status == CommandStatus.FAILED
+    print("  -> PASS: Concurrent claims, interrupted writes, and duplicate document replay fail safely.")
+
     # 7. Live Firestore Security Rules validation
     print("\n[7] Testing Firestore Security Rules (User Isolation & Field Protection)...")
     import base64
@@ -264,14 +284,17 @@ async def run_emulator_tests(require_emulator: bool = False) -> None:
     cmd_url = f"{base_rest_url}/users/{alice_uid}/commands/cmd_rules_test_1"
     valid_payload = {
         "fields": {
-            "status": {"stringValue": "PENDING"},
+            "status": {"stringValue": "queued"},
             "user_id": {"stringValue": alice_uid},
             "name": {"stringValue": "test_cmd"},
+            "id": {"stringValue": "cmd_rules_test_1"},
+            "type": {"stringValue": "agent_run"},
+            "idempotency_key": {"stringValue": "rules-key"},
         }
     }
     status_create = do_request(cmd_url, "PATCH", token=alice_token, payload=valid_payload)
     assert status_create == 200, f"Expected 200 for valid create, got {status_create}"
-    print("  -> PASS: User Alice can create valid PENDING command.")
+    print("  -> PASS: User Alice can create valid queued command.")
 
     # 7b. Bob attempts to read Alice's command (User Isolation)
     status_bob_read = do_request(cmd_url, "GET", token=bob_token)
@@ -293,7 +316,7 @@ async def run_emulator_tests(require_emulator: bool = False) -> None:
     for forbidden_field in forbidden_fields:
         bad_payload = {
             "fields": {
-                "status": {"stringValue": "PENDING"},
+                "status": {"stringValue": "queued"},
                 "user_id": {"stringValue": alice_uid},
                 forbidden_field: {"stringValue": "tampered_value"},
             }
@@ -314,11 +337,9 @@ async def run_emulator_tests(require_emulator: bool = False) -> None:
     print("  -> PASS: Client forbidden from directly modifying execution status to COMPLETED (HTTP 403).")
 
     # 7g. Alice can cancel her own pending command
-    cancel_payload = {
-        "fields": {
-            "status": {"stringValue": "CANCELLED"},
-        }
-    }
+    import copy
+    cancel_payload = copy.deepcopy(valid_payload)
+    cancel_payload["fields"]["status"] = {"stringValue": "cancelled"}
     status_cancel = do_request(cmd_url, "PATCH", token=alice_token, payload=cancel_payload)
     assert status_cancel == 200, f"Expected 200 for user cancelling own pending command, got {status_cancel}"
     print("  -> PASS: Client allowed to cancel own PENDING command.")

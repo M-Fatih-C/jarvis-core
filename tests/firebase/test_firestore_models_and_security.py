@@ -579,6 +579,12 @@ async def test_approval_response_mandates_valid_action_digest_and_prevents_repla
             final_response="Etkinlik oluşturuldu.",
         )
     )
+    async def simulate_runtime_resume(approval_id, user_id=None):
+        approval_store.approve(approval_id, current_tool_call=call, user_id=user_id)
+        approval_store.consume(approval_id, call, user_id=user_id)
+        return AgentRun(id=run_id, user_input="Synthetic action", state=AgentState.COMPLETED,
+                        final_response="Etkinlik oluşturuldu.")
+    mock_runtime.resume_approval.side_effect = simulate_runtime_resume
     cmd_valid = CloudCommand(
         id="cmd_valid_approval",
         type="approval_response",
@@ -618,7 +624,7 @@ async def test_approval_response_mandates_valid_action_digest_and_prevents_repla
     await repo.create(cmd_replay)
     res_replay = await worker.poll_once()
     assert res_replay.status == CommandStatus.FAILED
-    assert "ApprovalInvalidState" in res_replay.error
+    assert "ApprovalAlreadyConsumed" in res_replay.error
 
 
 @pytest.mark.asyncio

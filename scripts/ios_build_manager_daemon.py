@@ -4,6 +4,8 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.build_manager.manager import BuildManager
 from core.logging.setup import get_logger
 
@@ -16,7 +18,7 @@ async def main() -> None:
 
     # Singleton check via file lock to avoid duplicate daemon instances
     from core.build_manager.manager import CrossProcessLock
-    daemon_lock = CrossProcessLock("/tmp/jarvis_daemon.lock")
+    daemon_lock = CrossProcessLock(os.path.expanduser("~/.cache/jarvis/build/daemon.lock"))
     if not daemon_lock.acquire(blocking=False):
         logger.warning("ios_build_manager_daemon_already_running_skipping")
         return

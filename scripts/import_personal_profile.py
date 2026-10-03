@@ -346,7 +346,7 @@ def parse_general_profile(seed_data: dict[str, Any], filepath: Path) -> tuple[li
             sensitivity=MemorySensitivity.LOCAL_ONLY,  # Strictly local, never synced to cloud
             confidence=confidence,
             source_type=MemorySourceType.DOCUMENT if "verified" in str(raw_status) else MemorySourceType.EXPLICIT_USER,
-            source_reference=f"seed:{filepath.name}#{source_id}",
+            source_ref=f"seed:{filepath.name}#{source_id}",
             category=raw_category,
             source_id=source_id,
             as_of=as_of,
@@ -388,7 +388,7 @@ def parse_sensitive_profile(
 ) -> tuple[list[MemoryCandidate], ImportStats]:
     """Parse jarvis_sensitive_opt_in_*.json into PRIVATE AES-256-GCM candidates.
     
-    Strictly enforces that only user-consented categories are parsed.
+    Category selection authorizes encrypted import only, never retrieval consent.
     """
     stats = ImportStats()
     candidates: list[MemoryCandidate] = []
@@ -414,7 +414,7 @@ def parse_sensitive_profile(
                 sensitivity=MemorySensitivity.PRIVATE,
                 confidence=1.0,
                 source_type=MemorySourceType.EXPLICIT_USER,
-                source_reference=f"seed:{filepath.name}#identity.student_ids",
+                source_ref=f"seed:{filepath.name}#identity.student_ids",
                 category="identity_and_school_ids",
                 source_id="sensitive.identity.student_ids",
                 as_of="2026-09-18",
@@ -437,7 +437,7 @@ def parse_sensitive_profile(
                 sensitivity=MemorySensitivity.PRIVATE,
                 confidence=1.0,
                 source_type=MemorySourceType.EXPLICIT_USER,
-                source_reference=f"seed:{filepath.name}#identity.personal_details",
+                source_ref=f"seed:{filepath.name}#identity.personal_details",
                 category="identity_and_school_ids",
                 source_id="sensitive.identity.personal_details",
                 as_of="2026-09-16",
@@ -466,7 +466,7 @@ def parse_sensitive_profile(
                 sensitivity=MemorySensitivity.PRIVATE,
                 confidence=0.85,
                 source_type=MemorySourceType.EXPLICIT_USER,
-                source_reference=f"seed:{filepath.name}#financial.debts",
+                source_ref=f"seed:{filepath.name}#financial.debts",
                 category="financial_historical",
                 source_id="sensitive.financial.debts_and_cards",
                 as_of=as_of_fin,
@@ -493,7 +493,7 @@ def parse_sensitive_profile(
                 sensitivity=MemorySensitivity.PRIVATE,
                 confidence=0.85,
                 source_type=MemorySourceType.EXPLICIT_USER,
-                source_reference=f"seed:{filepath.name}#financial.income",
+                source_ref=f"seed:{filepath.name}#financial.income",
                 category="financial_historical",
                 source_id="sensitive.financial.income_and_tuition",
                 as_of=as_of_fin,
@@ -521,7 +521,7 @@ def parse_sensitive_profile(
                 sensitivity=MemorySensitivity.PRIVATE,
                 confidence=0.85,
                 source_type=MemorySourceType.EXPLICIT_USER,
-                source_reference=f"seed:{filepath.name}#health.historical",
+                source_ref=f"seed:{filepath.name}#health.historical",
                 category="health_historical",
                 source_id="sensitive.health.physical_and_supplements",
                 as_of="2026-09-30",
@@ -544,7 +544,7 @@ def parse_sensitive_profile(
                 sensitivity=MemorySensitivity.PRIVATE,
                 confidence=0.80,
                 source_type=MemorySourceType.EXPLICIT_USER,
-                source_reference=f"seed:{filepath.name}#personal.historical",
+                source_ref=f"seed:{filepath.name}#personal.historical",
                 category="personal_historical",
                 source_id="sensitive.personal.historical_notes",
                 as_of=as_of_p,
@@ -757,7 +757,7 @@ def main() -> None:
         )
         print_summary_table(stats, mode_str, db_path, input_file)
     except Exception as exc:
-        print(f"\nHATA: İçe aktarma başarısız: {exc}", file=sys.stderr)
+        print(f"\nHATA: İçe aktarma başarısız ({type(exc).__name__}); kişisel içerik yazdırılmadı.", file=sys.stderr)
         sys.exit(1)
 
 

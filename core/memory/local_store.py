@@ -12,6 +12,7 @@ import sqlite3
 from typing import Any
 from uuid import UUID
 from core.logging.setup import get_logger
+from core.memory.consent import ConsentStore
 from core.memory.models import (
     MemoryFilters,
     MemoryKind,
@@ -57,9 +58,15 @@ class SQLiteMemoryRepository(MemoryRepository):
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_db()
+        self._consent_store = ConsentStore(db_path=self._db_path, conn=self._conn)
+
+    def get_consent_store(self) -> ConsentStore:
+        """Return the persistent consent store for user category consent decisions."""
+        return self._consent_store
 
     def _get_connection(self) -> sqlite3.Connection:
         return self._conn
+
 
     def _init_db(self) -> None:
         """Create table and indexes if they do not exist, and migrate missing columns."""
@@ -237,6 +244,7 @@ class SQLiteMemoryRepository(MemoryRepository):
             return self._row_to_record(row) if row else None
 
     async def save(self, memory: MemoryRecord) -> MemoryRecord:
+        memory = memory.storage_copy()
         async with self._lock:
             with self._conn:
                 self._conn.execute("""
@@ -289,6 +297,7 @@ class SQLiteMemoryRepository(MemoryRepository):
             return memory
 
     async def update(self, memory: MemoryRecord, expected_revision: int | None = None) -> MemoryRecord:
+        memory = memory.storage_copy()
         async with self._lock:
             cursor = self._conn.execute("SELECT revision FROM memories WHERE id = ?", (str(memory.id),))
             row = cursor.fetchone()
@@ -470,6 +479,46 @@ class SQLiteMemoryRepository(MemoryRepository):
                     "leaked_fields": leaked_fields,
                 })
             return leaks
+
+    def audit_storage_guarantees(self) -> dict[str, Any]:
+        """Audit storage guarantees distinguishing between PRIVATE, LOCAL_ONLY, NORMAL, and SECRET_REFERENCE."""
+        with self._conn:
+            cursor = self._conn.cursor()
+            cursor.execute("SELECT sensitivity, count(*) FROM memories GROUP BY sensitivity")
+            counts = {r[0]: r[1] for r in cursor.fetchall()}
+
+            # Check PRIVATE records for plaintext leaks
+            cursor.execute("""
+                SELECT count(*) FROM memories
+                WHERE sensitivity = 'private'
+                  AND (
+                      (content IS NOT NULL AND content != '')
+                      OR (embedding_json IS NOT NULL AND embedding_json != '')
+                      OR (structured_json IS NOT NULL AND structured_json NOT IN ('', '{}'))
+                      OR (value_json IS NOT NULL AND value_json != '')
+                      OR (subject IS NOT NULL AND subject != 'private_vault')
+                      OR (predicate IS NOT NULL AND predicate != 'encrypted')
+                      OR (tags_json IS NOT NULL AND tags_json NOT IN ('', '[]'))
+                      OR (source_ref IS NOT NULL AND source_ref != '')
+                      OR encrypted_content IS NULL OR encrypted_content = ''
+                  )
+            """)
+            private_leaks = cursor.fetchone()[0]
+
+            return {
+                "storage_model": "record_payload_encryption",
+                "database_encryption_scope": "Individual PRIVATE payloads are encrypted with AES-256-GCM via macOS Keychain; the SQLite container is standard local storage.",
+                "sensitivity_counts": {
+                    "private": counts.get("private", 0),
+                    "local_only": counts.get("local_only", 0),
+                    "normal": counts.get("normal", 0),
+                    "secret_reference": counts.get("secret_reference", 0),
+                },
+                "guarantees": {
+                    "private_encrypted_locally": counts.get("private", 0) > 0 and private_leaks == 0,
+                    "private_plaintext_leaks": private_leaks,
+                },
+            }
 
     async def semantic_search(
         self,

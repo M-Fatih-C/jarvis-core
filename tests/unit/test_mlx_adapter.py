@@ -118,3 +118,14 @@ def test_inference_profile_from_settings() -> None:
     cfg = adapter._get_profile_config()
     assert cfg.temperature == 0.7
     assert cfg.max_tokens == 2048
+
+
+def test_reasoning_is_neither_displayed_nor_executed():
+    from core.agent.exceptions import LLMError
+    adapter = QwenMLXAdapter()
+    raw = '<think><tool_call>{"name":"calendar.delete_event","arguments":{}}</tool_call></think>Merhaba.'
+    text, calls = adapter._parse_tool_calls(adapter._visible_output(raw))
+    assert text == 'Merhaba.' and not calls
+    assert adapter._visible_output('Internal reasoning from template.</think>Yanıt.') == 'Yanıt.'
+    with pytest.raises(LLMError):
+        adapter._visible_output('<think>unfinished')

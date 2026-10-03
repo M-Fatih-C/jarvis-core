@@ -25,7 +25,7 @@ class MemoryKind(str, Enum):
 class MemorySensitivity(str, Enum):
     """Security classification determining sync, encryption, and embedding boundaries."""
     NORMAL = "normal"               # Syncs to Firestore in plaintext; cloud vector search enabled
-    PRIVATE = "private"             # Encrypted client-side with AES-256-GCM before cloud sync; local embedding only
+    PRIVATE = "private"             # Encrypted client-side with AES-256-GCM before cloud sync; no plaintext embeddings
     LOCAL_ONLY = "local_only"       # Never synced to Firestore; stays in local SQLite only
     SECRET_REFERENCE = "secret_reference"  # Logical reference only (e.g. 'github_main'); never raw secret; no embeddings
 
@@ -109,6 +109,19 @@ class MemoryRecord(BaseModel):
     schema_version: int = 1
     deleted_at: datetime | None = None
 
+    def storage_copy(self) -> "MemoryRecord":
+        """Keep decrypted retrieval objects from crossing a persistence boundary."""
+        if self.sensitivity != MemorySensitivity.PRIVATE:
+            return self
+        if not self.encrypted_content:
+            raise ValueError("PRIVATE storage requires an encrypted payload")
+        return self.model_copy(update={
+            "content": None, "structured": {}, "value": None,
+            "subject": "private_vault", "predicate": "encrypted",
+            "tags": [], "source_ref": None, "embedding": None,
+            "embedding_model": None, "training_eligible": False,
+        }, deep=True)
+
 
 class MemoryCandidate(BaseModel):
     """Extracted memory proposal before policy evaluation and persistence."""
@@ -161,3 +174,13 @@ class FeedbackRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
     training_eligible: bool = False
+
+
+class MemoryAuthorizationContext(BaseModel):
+    """Context governing authorization for sensitive/private memory access."""
+    user_id: str | None = None
+    is_user_authenticated: bool = False
+    purpose: str = "general_query"
+    permitted_categories: list[str] = Field(default_factory=list)
+    untrusted_source: bool = False
+    session_id: str | None = None

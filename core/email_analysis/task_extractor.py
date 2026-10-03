@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
 
 from core.email_analysis.schemas import (
     DeadlineConfidence,
@@ -82,7 +82,7 @@ class TaskExtractor:
             proposed_action = "E-postayı incele"
 
         proposal = TaskProposal(
-            task_id=uuid4(),
+            task_id=uuid5(NAMESPACE_URL, f"jarvis:gmail:task:{email.message_id}"),
             source_message_id=email.message_id,
             title=title,
             description=description,

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import fcntl
 import json
 import os
+import tempfile
 from typing import Any
 from core.build_manager.builder import XcodeBuilder
 from core.build_manager.device_monitor import DeviceMonitor
@@ -32,14 +33,16 @@ class CrossProcessLock:
     daemon, and agent processes.
     """
 
-    def __init__(self, lock_file: str = "/tmp/jarvis_ios_build.lock") -> None:
-        self.lock_file = lock_file
+    def __init__(self, lock_file: str | None = None) -> None:
+        self.lock_file = lock_file or os.path.expanduser("~/.cache/jarvis/build/operation.lock")
         self._fd: Any = None
 
     def acquire(self, blocking: bool = False) -> bool:
         """Acquire non-blocking or blocking exclusive file lock."""
         try:
-            self._fd = open(self.lock_file, "w")
+            os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
+            fd = os.open(self.lock_file, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            self._fd = os.fdopen(fd, "a")
             flags = fcntl.LOCK_EX
             if not blocking:
                 flags |= fcntl.LOCK_NB
@@ -126,8 +129,11 @@ class BuildManager:
         """Persist state to disk."""
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            with open(self.state_file, "w", encoding="utf-8") as f:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(self.state_file), delete=False) as f:
                 json.dump(self.state.model_dump(mode="json"), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(f.name, self.state_file)
         except Exception as exc:
             logger.error("failed_saving_build_manager_state", error=str(exc))
 
@@ -198,7 +204,8 @@ class BuildManager:
             )
 
         try:
-            self._cross_lock.acquire(blocking=False)
+            if not self._cross_lock.acquire(blocking=False):
+                raise BlockingIOError("Build lock held")
         except Exception:
             return BuildResult(
                 success=False,
@@ -264,7 +271,8 @@ class BuildManager:
             )
 
         try:
-            self._cross_lock.acquire(blocking=False)
+            if not self._cross_lock.acquire(blocking=False):
+                raise BlockingIOError("Build lock held")
         except Exception:
             return InstallResult(
                 success=False,
@@ -303,7 +311,7 @@ class BuildManager:
 
                 # Pre-installation artifact integrity check
                 valid_artifact, integrity_err = await self.signing_inspector.verify_artifact_integrity(
-                    app_path, self.state.target_bundle_id
+                    app_path, self.state.target_bundle_id, expected_device_udid=dev.udid
                 )
                 if not valid_artifact:
                     err_msg = f"Artifact pre-installation security verification failed: {integrity_err}"
@@ -330,6 +338,9 @@ class BuildManager:
                 if install_res.success and install_res.verified:
                     self.state.status = BuildLifecycleState.SUCCESS
                     await self.notifier.notify(NotificationEvent.INSTALL_SUCCEEDED)
+                elif install_res.device_locked or install_res.requires_user_action:
+                    self.state.status = BuildLifecycleState.USER_ACTION_REQUIRED
+                    await self.notifier.notify(NotificationEvent.USER_ACTION_REQUIRED)
                 else:
                     self.state.status = BuildLifecycleState.FAILED
                     await self.notifier.notify(NotificationEvent.INSTALL_FAILED, detail=install_res.error)
@@ -402,7 +413,7 @@ class BuildManager:
 
         if install_after:
             install_res = await self.install()
-            if not install_res.success:
+            if not install_res.success or not install_res.verified:
                 self.state.renewal_retry_count += 1
                 self.state.last_renewal_attempt = now
                 self._save_state()
@@ -410,7 +421,7 @@ class BuildManager:
                     "success": False,
                     "renewed": False,
                     "error": f"Renewal installation failed: {install_res.error}",
-                    "user_action_required": False,
+                    "user_action_required": install_res.requires_user_action or install_res.device_locked,
                 }
             self.state.last_successful_renewal = now
             self.state.renewal_retry_count = 0
@@ -420,7 +431,9 @@ class BuildManager:
 
         return {
             "success": True,
-            "renewed": True,
+            "renewed": install_after,
+            "profile_generated": True,
+            "installation_required": not install_after,
             "days_remaining": new_prov.days_remaining if new_prov else None,
             "expiration_date": new_prov.expiration_date.isoformat() if new_prov and new_prov.expiration_date else None,
             "user_action_required": False,
@@ -462,20 +475,8 @@ class BuildManager:
             return False
 
         logger.info("auto_trigger_executing_renewal")
-        renew_res = await self.renew(install_after=False)
-        if renew_res.get("success"):
-            install_res = await self.install()
-            if install_res.success:
-                self.state.last_successful_renewal = datetime.now(timezone.utc)
-                self.state.renewal_retry_count = 0
-                self._save_state()
-                return True
-            else:
-                self.state.renewal_retry_count += 1
-                self.state.last_renewal_attempt = datetime.now(timezone.utc)
-                self._save_state()
-                return False
-        return False
+        renew_res = await self.renew(install_after=True)
+        return bool(renew_res.get("success") and renew_res.get("renewed"))
 
     def set_auto_renew(self, enabled: bool) -> bool:
         """Toggle automatic wireless build and renewal."""

@@ -190,6 +190,18 @@ def get_deterministic_temporal_grounding(
     has_tomorrow = bool(re.search(r"\b(yarın|tomorrow)\b", input_lower))
     has_today = bool(re.search(r"\b(bugün|today)\b", input_lower))
 
+    if any(phrase in input_lower for phrase in ("bu hafta", "this week", "gelecek hafta", "next week", "önümüzdeki hafta")):
+        week_start = (anchor_dt - timedelta(days=anchor_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        if any(phrase in input_lower for phrase in ("gelecek hafta", "next week", "önümüzdeki hafta")):
+            week_start += timedelta(days=7)
+        week_end = week_start + timedelta(days=7)
+        return (
+            "Deterministic calendar week (Monday through Sunday):\n"
+            f"- calendar.list_events start (inclusive): {week_start.isoformat()}\n"
+            f"- calendar.list_events end (exclusive): {week_end.isoformat()}\n"
+            "- This range does not confirm that historical class schedules still apply."
+        )
+
     if not (has_tomorrow or has_today):
         return None
 

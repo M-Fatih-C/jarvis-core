@@ -19,6 +19,7 @@ class ApprovalStore:
         agent_run_id: UUID,
         tool_call: ToolCall,
         ttl_seconds: int | None = None,
+        user_id: str | None = None,
     ) -> ApprovalRequest:
         """Create and register a new pending approval request with action digest binding.
         
@@ -42,7 +43,8 @@ class ApprovalStore:
 
         req = ApprovalRequest(
             agent_run_id=agent_run_id,
-            tool_call=tool_call,
+            tool_call=tool_call.model_copy(deep=True),
+            user_id=user_id,
             action_digest=digest,
             status=ApprovalStatus.PENDING,
             created_at=now,
@@ -69,6 +71,7 @@ class ApprovalStore:
         self,
         approval_id: UUID,
         current_tool_call: ToolCall | None = None,
+        user_id: str | None = None,
     ) -> ApprovalRequest:
         """Approve a pending request.
         
@@ -84,6 +87,9 @@ class ApprovalStore:
         req = self.get(approval_id)
         if req is None:
             raise JarvisError(f"Approval request '{approval_id}' not found.")
+
+        if req.user_id is not None and req.user_id != user_id:
+            raise ApprovalIntegrityError("Approval identity mismatch")
 
         if req.status == ApprovalStatus.EXPIRED or datetime.now(timezone.utc) > req.expires_at:
             raise ApprovalExpiredError(f"Approval request '{approval_id}' has expired.")
@@ -108,7 +114,7 @@ class ApprovalStore:
         self._requests[approval_id] = updated
         return updated
 
-    def consume(self, approval_id: UUID, tool_call: ToolCall) -> ApprovalRequest:
+    def consume(self, approval_id: UUID, tool_call: ToolCall, user_id: str | None = None) -> ApprovalRequest:
         """Mark an approved request as consumed upon execution, verifying integrity.
         
         Args:
@@ -123,6 +129,9 @@ class ApprovalStore:
         req = self.get(approval_id)
         if req is None:
             raise JarvisError(f"Approval request '{approval_id}' not found.")
+
+        if req.user_id is not None and req.user_id != user_id:
+            raise ApprovalIntegrityError("Approval identity mismatch")
 
         if req.status == ApprovalStatus.EXPIRED or datetime.now(timezone.utc) > req.expires_at:
             raise ApprovalExpiredError(f"Approval request '{approval_id}' has expired.")
@@ -153,11 +162,14 @@ class ApprovalStore:
         self._requests[approval_id] = consumed_req
         return consumed_req
 
-    def reject(self, approval_id: UUID) -> ApprovalRequest:
+    def reject(self, approval_id: UUID, user_id: str | None = None) -> ApprovalRequest:
         """Reject a pending request."""
         req = self.get(approval_id)
         if req is None:
             raise JarvisError(f"Approval request '{approval_id}' not found.")
+
+        if req.user_id is not None and req.user_id != user_id:
+            raise ApprovalIntegrityError("Approval identity mismatch")
 
         if req.status != ApprovalStatus.PENDING:
             raise JarvisError(f"Approval request '{approval_id}' is already {req.status.value}.")

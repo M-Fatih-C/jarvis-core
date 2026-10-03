@@ -75,7 +75,7 @@ public struct DeviceStatusView: View {
                     HStack {
                         Text("İstemci - Sunucu Kanalı")
                         Spacer()
-                        Text("Firestore Command Queue + Local API")
+                        Text("Güvenli Firebase bağlantısı")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -83,7 +83,7 @@ public struct DeviceStatusView: View {
                     HStack {
                         Text("Yerel IPC Köprüsü")
                         Spacer()
-                        Text("Unix Domain Socket (0600)")
+                        Text("Mac üzerinde yerel bağlantı")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -91,7 +91,7 @@ public struct DeviceStatusView: View {
                     HStack {
                         Text("Güvenlik & Politika")
                         Spacer()
-                        Text("PolicyEngine R2 Human-in-the-Loop")
+                        Text("Değişiklikler onayınızı gerektirir")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -117,6 +117,12 @@ public struct DeviceStatusView: View {
                             }
                         }
                     }
+                }
+            }
+            .task {
+                while !Task.isCancelled {
+                    await viewModel.checkStatus()
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
                 }
             }
             .navigationTitle("Sunucu Durumu")

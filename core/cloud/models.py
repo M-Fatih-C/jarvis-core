@@ -22,6 +22,7 @@ class DeviceRecord(BaseModel):
     name: str
     status: DeviceStatus = DeviceStatus.ONLINE
     app_version: str | None = "0.1.0"
+    health: dict[str, Any] = Field(default_factory=dict)
     capabilities: list[str] = Field(default_factory=lambda: ["local_llm", "memory", "tool_execution"])
     last_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -44,6 +45,7 @@ class CloudCommand(BaseModel):
     model_config = ConfigDict(frozen=False)
 
     id: str
+    user_id: str | None = None
     type: str = "tool_execution"
     name: str
     source_device: str

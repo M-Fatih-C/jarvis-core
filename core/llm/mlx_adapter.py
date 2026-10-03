@@ -97,6 +97,16 @@ class QwenMLXAdapter(LLMAdapter):
         """Check if adapter is operational."""
         return self._is_loaded
 
+    @staticmethod
+    def _visible_output(text: str) -> str:
+        """Discard Qwen reasoning, including an opening tag supplied by the template."""
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[1]
+        if "<think>" in text:
+            # Truncated reasoning is not a final answer or an executable tool call.
+            raise LLMError("Model stopped before completing its response")
+        return text.strip()
+
     def _get_profile_config(self) -> ProfileConfig:
         return PROFILE_SETTINGS.get(self._profile, PROFILE_SETTINGS[InferenceProfile.FAST])
 
@@ -310,6 +320,7 @@ class QwenMLXAdapter(LLMAdapter):
                 formatted_messages,
                 add_generation_prompt=True,
                 tokenize=False,
+                enable_thinking=False,
             )
             return mlx_lm.generate(
                 self._model,
@@ -324,7 +335,7 @@ class QwenMLXAdapter(LLMAdapter):
             async with self._inference_lock:
                 raw_text = await asyncio.to_thread(_run_inference)
             return LLMResponse(
-                content=raw_text.strip(),
+                content=self._visible_output(raw_text),
                 tool_calls=[],
                 finish_reason="stop",
                 model=self._model_id,
@@ -360,6 +371,7 @@ class QwenMLXAdapter(LLMAdapter):
                     tools=formatted_tools,
                     add_generation_prompt=True,
                     tokenize=False,
+                    enable_thinking=False,
                 )
             except (TypeError, Exception):
                 # Fallback if tokenizer template doesn't support tools kwarg directly
@@ -373,6 +385,7 @@ class QwenMLXAdapter(LLMAdapter):
                     injected_messages,
                     add_generation_prompt=True,
                     tokenize=False,
+                    enable_thinking=False,
                 )
 
             return mlx_lm.generate(
@@ -387,7 +400,7 @@ class QwenMLXAdapter(LLMAdapter):
         try:
             async with self._inference_lock:
                 raw_text = await asyncio.to_thread(_run_tool_inference)
-            clean_content, tool_calls = self._parse_tool_calls(raw_text)
+            clean_content, tool_calls = self._parse_tool_calls(self._visible_output(raw_text))
 
             return LLMResponse(
                 content=clean_content or (None if tool_calls else ""),

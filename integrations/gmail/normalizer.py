@@ -102,10 +102,14 @@ class GmailNormalizer:
         sender_display = f"{sender_name} <{sender_email}>" if sender_name else sender_email or raw_from
         recipient = headers.get("to", "")
 
-        # Parse date
+        # Gmail's receipt timestamp defines "new mail", not the sender's Date
+        # header (which can be delayed or inaccurate). Preserve the header below.
         received_at: datetime
         date_str = headers.get("date")
-        if date_str:
+        internal_ms = raw_msg.get("internalDate")
+        if internal_ms is not None:
+            received_at = datetime.fromtimestamp(int(internal_ms) / 1000.0, tz=timezone.utc)
+        elif date_str:
             try:
                 received_at = parsedate_to_datetime(date_str)
                 if received_at.tzinfo is None:

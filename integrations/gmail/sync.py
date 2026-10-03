@@ -41,6 +41,17 @@ class GmailSyncService:
         self.max_messages = max_messages_per_sync
         self._sync_lock = asyncio.Lock()
 
+    async def _list_all_messages(self, query: str, account: str) -> list[dict[str, Any]]:
+        stubs = []
+        page_token = None
+        while True:
+            page, page_token = await self.client.list_messages(
+                query=query, max_results=self.max_messages, account=account, page_token=page_token,
+            )
+            stubs.extend(page)
+            if not page_token:
+                return stubs
+
     async def _fetch_and_persist_messages(
         self,
         message_stubs: list[dict[str, Any]],
@@ -50,6 +61,7 @@ class GmailSyncService:
     ) -> list[NormalizedEmail]:
         """Fetch, normalize, and store message stubs."""
         new_emails: list[NormalizedEmail] = []
+        monitoring_start = await self.storage.get_monitoring_start()
         for stub in message_stubs:
             msg_id = stub.get("id", "")
             if not msg_id:
@@ -62,6 +74,9 @@ class GmailSyncService:
             try:
                 raw_msg = await self.client.get_message(msg_id, format_type="full", account=account)
                 normalized = self.normalizer.normalize_message(raw_msg)
+                if monitoring_start and normalized.received_at < monitoring_start:
+                    result.skipped_count += 1
+                    continue
                 saved = await self.storage.save_email(normalized, account_email)
                 if saved:
                     result.new_count += 1
@@ -119,16 +134,12 @@ class GmailSyncService:
             try:
                 if state is None or state.last_history_id is None:
                     # Initial synchronization via lookback query
-                    cutoff = now_utc - timedelta(days=self.lookback_days)
+                    cutoff = await self.storage.get_monitoring_start() or (now_utc - timedelta(days=self.lookback_days))
                     epoch_sec = int(cutoff.timestamp())
                     query = f"after:{epoch_sec}"
                     logger.info("gmail_initial_sync", lookback_days=self.lookback_days, cutoff=cutoff.isoformat())
 
-                    stubs, _ = await self.client.list_messages(
-                        query=query,
-                        max_results=self.max_messages,
-                        account=account,
-                    )
+                    stubs = await self._list_all_messages(query, account)
                     result.synced_count = len(stubs)
                     new_emails = await self._fetch_and_persist_messages(
                         stubs, account_email, account, result
@@ -166,7 +177,7 @@ class GmailSyncService:
                                         deleted_ids.add(msg["id"])
 
                             page_token = hist_resp.get("nextPageToken")
-                            if not page_token or len(added_stubs) >= self.max_messages:
+                            if not page_token:
                                 break
 
                     except GmailHistoryExpiredError:
@@ -176,12 +187,11 @@ class GmailSyncService:
                             start_history_id=start_history_id,
                         )
                         cutoff = (state.last_synced_at or (now_utc - timedelta(days=self.lookback_days))) - timedelta(seconds=120)
+                        monitoring_start = await self.storage.get_monitoring_start()
+                        if monitoring_start:
+                            cutoff = max(cutoff, monitoring_start)
                         query = f"after:{int(cutoff.timestamp())}"
-                        added_stubs, _ = await self.client.list_messages(
-                            query=query,
-                            max_results=self.max_messages,
-                            account=account,
-                        )
+                        added_stubs = await self._list_all_messages(query, account)
                         latest_history_id = profile.history_id
 
                     # Handle deleted messages
@@ -195,8 +205,9 @@ class GmailSyncService:
                     )
 
                 # Cursor safety: advance last_history_id and last_synced_at ONLY after processing succeeds
-                sync_state.last_synced_at = now_utc
-                sync_state.last_history_id = latest_history_id or profile.history_id
+                if result.failed_count == 0:
+                    sync_state.last_synced_at = now_utc
+                    sync_state.last_history_id = latest_history_id or profile.history_id
                 sync_state.total_messages_synced += result.new_count
                 sync_state.status = "idle"
                 sync_state.error_message = None
@@ -220,4 +231,3 @@ class GmailSyncService:
                 result.failed_count += 1
 
             return result, new_emails
-

@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import plistlib
 import time
 from core.build_manager.state import InstallResult
 from core.logging.setup import get_logger
@@ -51,7 +52,7 @@ class AppInstaller:
             apps = data.get("result", {}).get("apps", [])
             for app in apps:
                 if app.get("bundleIdentifier") == bundle_id:
-                    version = app.get("version") or app.get("bundleVersion")
+                    version = app.get("bundleVersion") or app.get("version")
                     name = app.get("name")
                     return True, version, name
 
@@ -91,6 +92,9 @@ class AppInstaller:
             "--device", device_identifier,
             app_bundle_path
         ]
+
+        with open(os.path.join(app_bundle_path, "Info.plist"), "rb") as f:
+            expected_version = str(plistlib.load(f)["CFBundleVersion"])
 
         logger.info(
             "devicectl_install_starting",
@@ -136,7 +140,8 @@ class AppInstaller:
                     bundle_id=bundle_id,
                     error=err_msg,
                     duration_seconds=duration,
-                    device_locked=device_locked
+                    device_locked=device_locked,
+                    requires_user_action=device_locked or "developer mode" in output_combined.lower(),
                 )
 
             # Verification: query installed apps via devicectl to verify application presence
@@ -146,9 +151,9 @@ class AppInstaller:
                 await asyncio.sleep(1.0)
                 verified, version, _ = await cls.verify_installed_app(device_identifier, bundle_id)
 
-            if not verified:
+            if not verified or str(version) != expected_version:
                 err_msg = (
-                    f"Installation command returned code 0, but app '{bundle_id}' could not be verified on device "
+                    f"Installation command returned code 0, but app '{bundle_id}' build {expected_version} could not be verified on device (reported {version}) "
                     f"via 'devicectl device info apps'. Exit code zero alone is not accepted as proof."
                 )
                 logger.warning("devicectl_install_unverified", device_id=device_identifier)

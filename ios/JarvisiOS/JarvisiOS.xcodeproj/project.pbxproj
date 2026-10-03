@@ -29,6 +29,8 @@
 		1021 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2021 /* KeychainHelper.swift */; };
 		1022 /* FirebaseAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2022 /* FirebaseAuthService.swift */; };
 		1023 /* FirebaseCommandQueueService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2023 /* FirebaseCommandQueueService.swift */; };
+		1024 /* VoiceConversationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2024 /* VoiceConversationService.swift */; };
+		1025 /* JarvisAvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2025 /* JarvisAvatarView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -56,8 +58,23 @@
 		2021 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		2022 /* FirebaseAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseAuthService.swift; sourceTree = "<group>"; };
 		2023 /* FirebaseCommandQueueService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseCommandQueueService.swift; sourceTree = "<group>"; };
+		2024 /* VoiceConversationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceConversationService.swift; sourceTree = "<group>"; };
+		2025 /* JarvisAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JarvisAvatarView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXShellScriptBuildPhase section */
+        4009 /* Local Firebase configuration */ = {
+            isa = PBXShellScriptBuildPhase;
+            buildActionMask = 2147483647;
+            files = ();
+            inputPaths = ("$(JARVIS_FIREBASE_CONFIG)");
+            outputPaths = ("$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist");
+            alwaysOutOfDate = 1;
+            runOnlyForDeploymentPostprocessing = 0;
+            shellPath = /bin/sh;
+            shellScript = "if [ -f \"$JARVIS_FIREBASE_CONFIG\" ]; then cp \"$JARVIS_FIREBASE_CONFIG\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GoogleService-Info.plist\"; fi";
+        };
+/* End PBXShellScriptBuildPhase section */
 /* Begin PBXFrameworksBuildPhase section */
 		4001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
@@ -116,6 +133,7 @@
 				2021 /* KeychainHelper.swift */,
 				2022 /* FirebaseAuthService.swift */,
 				2023 /* FirebaseCommandQueueService.swift */,
+				2024 /* VoiceConversationService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -137,6 +155,7 @@
 			isa = PBXGroup;
 			children = (
 				2013 /* ChatView.swift */,
+				2025 /* JarvisAvatarView.swift */,
 				2014 /* ApprovalsView.swift */,
 				2015 /* CalendarScheduleView.swift */,
 				2016 /* EmailsView.swift */,
@@ -156,6 +175,7 @@
 			buildPhases = (
 				8001 /* Sources */,
 				4001 /* Frameworks */,
+                4009 /* Local Firebase configuration */,
 				9001 /* Resources */,
 			);
 			buildRules = (
@@ -238,6 +258,8 @@
 				1021 /* KeychainHelper.swift in Sources */,
 				1022 /* FirebaseAuthService.swift in Sources */,
 				1023 /* FirebaseCommandQueueService.swift in Sources */,
+				1025 /* JarvisAvatarView.swift in Sources */,
+				1024 /* VoiceConversationService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -379,6 +401,7 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mfatihc.jarvis;
+				JARVIS_FIREBASE_CONFIG = "$(SRCROOT)/JarvisiOS/FirebaseConfig.example.plist";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -403,6 +426,7 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mfatihc.jarvis;
+				JARVIS_FIREBASE_CONFIG = "$(SRCROOT)/JarvisiOS/FirebaseConfig.example.plist";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;

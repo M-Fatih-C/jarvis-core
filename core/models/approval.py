@@ -33,6 +33,7 @@ class ApprovalRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID = Field(default_factory=uuid4, description="Unique approval ID")
+    user_id: str | None = None
     agent_run_id: UUID = Field(description="Associated AgentRun ID")
     tool_call: ToolCall = Field(description="The proposed tool call awaiting approval")
     status: ApprovalStatus = Field(default=ApprovalStatus.PENDING, description="Current approval status")

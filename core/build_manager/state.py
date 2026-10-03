@@ -59,6 +59,7 @@ class ProvisioningInfo(BaseModel):
     needs_renewal: bool = False
     user_action_required: bool = False
     error: str | None = None
+    provisioned_devices: list[str] = Field(default_factory=list)
 
 
 class BuildArtifact(BaseModel):
@@ -88,6 +89,7 @@ class InstallResult(BaseModel):
     error: str | None = None
     duration_seconds: float = 0.0
     device_locked: bool = False
+    requires_user_action: bool = False
     verified: bool = False
     installed_version: str | None = None
     installed_bundle_id: str | None = None

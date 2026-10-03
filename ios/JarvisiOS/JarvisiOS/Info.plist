@@ -15,9 +15,13 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>1.3.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>14</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Jarvis, basılı tutarak verdiğiniz sesli komutu almak için mikrofonu kullanır.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Türkçe konuşmanızı komuta dönüştürür. Desteklenen cihazlarda tanıma yerelde yapılır.</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>UIApplicationSceneManifest</key>

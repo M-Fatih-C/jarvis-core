@@ -27,9 +27,20 @@ public final class DeviceStatusViewModel: ObservableObject {
         do {
             let res = try await apiService.checkHealth()
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
-            isConnected = (res["status"] as? String) == "healthy"
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let timestamp = res["last_seen_at"] as? String ?? ""
+            lastHeartbeat = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
+            let age = lastHeartbeat.map { Date().timeIntervalSince($0) } ?? .infinity
+            isConnected = (res["status"] as? String) == "online" && age >= -60 && age < 100
+            if let health = res["health"] as? [String: Any] {
+                modelName = (health["model"] as? String) ?? "Bilinmiyor"
+                if health["model_ready"] as? Bool != true { errorMessage = "Yerel model hazır değil." }
+                if health["mac_agent_connected"] as? Bool != true { errorMessage = "MacAgent bağlantısı yok." }
+            }
+            if age >= 100 { errorMessage = "Mac sinyali güncel değil; uyku veya ağ bağlantısını kontrol edin." }
             latencyMs = isConnected ? elapsed : nil
-            lastHeartbeat = Date()
+
         } catch {
             isConnected = false
             latencyMs = nil

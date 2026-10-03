@@ -62,6 +62,7 @@ class AgentRuntime:
         self._runs: dict[UUID, AgentRun] = {}
         self._contexts: dict[UUID, list[ChatMessage]] = {}
         self._state_machines: dict[UUID, AgentStateMachine] = {}
+        self._conversations: dict[tuple[str, str], list[ChatMessage]] = {}
 
     @property
     def memory_service(self) -> Any:
@@ -83,6 +84,8 @@ class AgentRuntime:
         source: str = "chat",
         agent_mode: AgentMode | None = None,
         anchor_datetime: datetime | None = None,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> AgentRun:
         """Main entry point to initiate and execute an agent run.
         
@@ -108,6 +111,8 @@ class AgentRuntime:
             source=source,
             agent_mode=mode,
             user_input=user_input,
+            user_id=user_id,
+            conversation_id=conversation_id,
             step_count=0,
             tool_call_count=0,
             created_at=now,
@@ -138,6 +143,9 @@ class AgentRuntime:
                 anchor_datetime=anchor_datetime,
                 memory_context=memory_context,
             )
+            if user_id and conversation_id:
+                history = self._conversations.get((user_id, conversation_id), [])
+                messages[1:1] = [m.model_copy(deep=True) for m in history[-20:]]
             self._contexts[run_id] = messages
 
             # 2. Start cognitive loop
@@ -161,6 +169,7 @@ class AgentRuntime:
         """Execute iterative cognitive steps up to configured limits."""
         agent_run = self._runs[run_id]
         messages = self._contexts[run_id]
+        approval_card_retries = 0
         while agent_run.step_count < self._settings.max_agent_steps:
             agent_run.step_count += 1
             agent_run.updated_at = datetime.now(timezone.utc)
@@ -202,6 +211,24 @@ class AgentRuntime:
                     ))
 
             # If no tools called, we proceed to final response
+            if not llm_response.tool_calls:
+                response_lower = (llm_response.content or "").lower()
+                verbal_approval_only = any(phrase in response_lower for phrase in (
+                    "onayınızı", "onay gerekiyor", "onayınız gerekiyor", "your approval", "awaiting approval",
+                ))
+                if verbal_approval_only and agent_run.agent_mode != AgentMode.OBSERVE:
+                    if approval_card_retries == 0:
+                        approval_card_retries += 1
+                        messages.append(ChatMessage(role=MessageRole.USER, is_internal=True, content=(
+                            "Approval is collected by the runtime, not by conversational confirmation. "
+                            "Emit the proposed tool call now to create its approval card. This does not execute it. "
+                            "If a required argument is genuinely missing, ask only for that argument."
+                        )))
+                        # Retry within THINKING; a subsequent tool call still goes through PolicyEngine.
+                        llm_response = await self._llm.generate_with_tools(messages, tool_defs)
+                    if not llm_response.tool_calls and any(phrase in (llm_response.content or "").lower() for phrase in ("onayınızı", "your approval", "awaiting approval")):
+                        raise AgentStateError("Onay kartı hazırlanamadı. Sonucu kontrol edip isteği yeniden belirtin.")
+
             if not llm_response.tool_calls:
                 self._transition(run_id, AgentState.RESPONDING)
                 raw_resp = llm_response.content or ""
@@ -275,6 +302,7 @@ class AgentRuntime:
                     agent_run_id=run_id,
                     tool_call=tool_call,
                     ttl_seconds=self._settings.approval_ttl_seconds,
+                    user_id=agent_run.user_id,
                 )
                 agent_run.pending_approval_id = approval_req.id
                 agent_run.pending_tool_call = tool_call
@@ -327,13 +355,13 @@ class AgentRuntime:
             f"Exceeded maximum reasoning steps ({self._settings.max_agent_steps})."
         )
 
-    async def resume_approval(self, approval_id: UUID) -> AgentRun:
+    async def resume_approval(self, approval_id: UUID, user_id: str | None = None) -> AgentRun:
         """Resume an AgentRun paused in WAITING_APPROVAL, continuing the cognitive loop."""
         existing_req = self._approvals.get(approval_id)
         current_call = None
         if existing_req and existing_req.agent_run_id in self._runs:
             current_call = self._runs[existing_req.agent_run_id].pending_tool_call
-        approval_req = self._approvals.approve(approval_id, current_tool_call=current_call)
+        approval_req = self._approvals.approve(approval_id, current_tool_call=current_call, user_id=user_id)
         run_id = approval_req.agent_run_id
         agent_run = self._runs[run_id]
 
@@ -346,7 +374,7 @@ class AgentRuntime:
         messages = self._contexts[run_id]
 
         # Consume the approval (one-time binding, verifying integrity at execution)
-        self._approvals.consume(approval_id, tool_call)
+        self._approvals.consume(approval_id, tool_call, user_id=user_id)
 
         # Transition WAITING_APPROVAL -> EXECUTING_TOOL
         self._transition(run_id, AgentState.EXECUTING_TOOL)
@@ -387,9 +415,9 @@ class AgentRuntime:
 
         return completed_run
 
-    async def resume_rejection(self, approval_id: UUID, reason: str | None = None) -> AgentRun:
+    async def resume_rejection(self, approval_id: UUID, reason: str | None = None, user_id: str | None = None) -> AgentRun:
         """Handle user rejection of a proposed tool call."""
-        approval_req = self._approvals.reject(approval_id)
+        approval_req = self._approvals.reject(approval_id, user_id=user_id)
         run_id = approval_req.agent_run_id
         agent_run = self._runs[run_id]
 
@@ -433,6 +461,12 @@ class AgentRuntime:
         run = self._runs[run_id]
         run.state = next_state
         run.updated_at = datetime.now(timezone.utc)
+        if next_state == AgentState.COMPLETED and run.user_id and run.conversation_id:
+            key = (run.user_id, run.conversation_id)
+            history = self._conversations.setdefault(key, [])
+            history.extend([ChatMessage(role=MessageRole.USER, content=run.user_input),
+                            ChatMessage(role=MessageRole.ASSISTANT, content=run.final_response or "")])
+            self._conversations[key] = history[-20:]
         logger.info("agent_state_transition", run_id=str(run_id), new_state=next_state.value)
 
     def _transition_failed(self, run_id: UUID, error_msg: str) -> None:

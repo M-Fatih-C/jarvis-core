@@ -75,6 +75,7 @@ class SigningInspector:
                 is_expired=is_expired,
                 needs_renewal=needs_renewal,
                 user_action_required=False,
+                provisioned_devices=plist_data.get("ProvisionedDevices", []),
             )
             logger.info(
                 "provisioning_profile_parsed",
@@ -122,7 +123,7 @@ class SigningInspector:
 
     @classmethod
     async def verify_artifact_integrity(
-        cls, app_bundle_path: str, expected_bundle_id: str
+        cls, app_bundle_path: str, expected_bundle_id: str, expected_device_udid: str | None = None
     ) -> tuple[bool, str | None]:
         """
         Verify bundle identifier, signing identity, codesign validity,
@@ -184,7 +185,11 @@ class SigningInspector:
             return False, f"Provisioning profile is expired (expired at {prov_info.expiration_date})"
 
         # Check provisioning app identifier
-        if prov_info.app_identifier and not prov_info.app_identifier.endswith(expected_bundle_id):
+        if not prov_info.expiration_date or not prov_info.app_identifier or not prov_info.team_identifier:
+            return False, "Provisioning profile is missing required validity or identity fields"
+        if prov_info.app_identifier != f"{prov_info.team_identifier}.{expected_bundle_id}":
             return False, f"Provisioning profile app ID {prov_info.app_identifier} does not match {expected_bundle_id}"
+        if expected_device_udid and expected_device_udid not in prov_info.provisioned_devices:
+            return False, "Provisioning profile does not authorize the approved iPhone"
 
         return True, None

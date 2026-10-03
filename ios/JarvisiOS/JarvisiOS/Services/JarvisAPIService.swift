@@ -180,10 +180,10 @@ public final class JarvisAPIService {
     }
 
     public func checkHealth() async throws -> [String: Any] {
-        guard let url = URL(string: "\(baseURLString)/health") else {
-            throw URLError(.badURL)
+        guard let uid = KeychainHelper.shared.read(key: "firebase_user_uid"),
+              let project = KeychainHelper.shared.read(key: "firebase_project_id") else {
+            throw CommandQueueError.unauthenticated
         }
-        let (data, _) = try await session.data(from: url)
-        return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+        return try await queueService.fetchDeviceStatus(userId: uid, projectId: project)
     }
 }

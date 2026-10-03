@@ -80,5 +80,5 @@ async def test_memory_retrieval_context_formatting_and_security_banner() -> None
     formatted_context = retriever.format_context_block(hits)
     assert "<memory_context>" in formatted_context
     assert CONTEXT_SECURITY_BANNER in formatted_context
-    assert "[preference | confidence=0.98] User prefers side-project work after 18:00 on weekdays." in formatted_context
+    assert "[preference | confidence=0.98 | status=user_reported] User prefers side-project work after 18:00 on weekdays." in formatted_context
     assert "</memory_context>" in formatted_context

@@ -94,3 +94,15 @@ def test_deterministic_temporal_grounding_generation() -> None:
     assert "2026-10-01" in grounding
     assert "Thursday" in grounding
     assert "Perşembe" in grounding
+
+
+def test_calendar_week_is_monday_bounded_across_months():
+    from zoneinfo import ZoneInfo
+    from core.time.temporal import get_deterministic_temporal_grounding
+    anchor = datetime(2026, 10, 3, 17, 0, tzinfo=ZoneInfo('Europe/Istanbul'))
+    current = get_deterministic_temporal_grounding('Bu haftaki programım?', anchor=anchor)
+    assert '2026-09-28T00:00:00+03:00' in current
+    assert '2026-10-05T00:00:00+03:00' in current
+    upcoming = get_deterministic_temporal_grounding('Gelecek hafta', anchor=anchor)
+    assert '2026-10-05T00:00:00+03:00' in upcoming
+    assert '2026-10-12T00:00:00+03:00' in upcoming

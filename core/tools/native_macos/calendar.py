@@ -213,8 +213,18 @@ class CreateEventTool(JarvisTool):
                 "alarm_minutes_before": validated.alarm_minutes_before,
             }
             res = await self._bridge.call("calendar.create_event", params)
+            event_id = res.get("id")
+            if not event_id:
+                return ToolResult(tool_call_id="", success=False, error="EventKit returned no event identifier; verify before retrying")
+            verified = await self._bridge.call("calendar.get_event", {"event_id": event_id})
+            times_match = all(
+                isinstance(verified.get(key), str) and datetime.fromisoformat(verified[key]) == expected
+                for key, expected in (("start", validated.start), ("end", validated.end))
+            )
+            if verified.get("title") != validated.title or verified.get("id") != event_id or not times_match:
+                return ToolResult(tool_call_id="", success=False, error="EventKit read-back did not match; verify before retrying")
             logger.info("calendar_create_event_success", event_id=res.get("id"))
-            return ToolResult(tool_call_id="", success=True, data={"status": "created", "event": res})
+            return ToolResult(tool_call_id="", success=True, data={"status": "created", "event": verified, "readback_verified": True})
         except PermissionDeniedBridgeError as p_err:
             return ToolResult(tool_call_id="", success=False, error=f"PERMISSION_DENIED: {p_err}")
         except MacBridgeError as exc:

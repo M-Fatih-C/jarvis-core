@@ -57,6 +57,14 @@ class GmailProcessingPipeline:
         result.sync_result = sync_res
         result.errors.extend(sync_res.errors)
 
+        # Recover work stored before a crash or a failed analysis.
+        seen = {email.message_id for email in new_emails}
+        for message_id in await self.storage.pending_analysis_ids():
+            if message_id not in seen:
+                email = await self.storage.get_email(message_id)
+                if email:
+                    new_emails.append(email)
+
         if not new_emails:
             logger.info("gmail_pipeline_no_new_emails")
             return result
@@ -82,10 +90,14 @@ class GmailProcessingPipeline:
                 notified = await self.notifier.notify_if_important(email, analysis, task)
                 if notified:
                     result.notifications_sent += 1
+                elif notified.status in ("permission_unavailable", "bridge_failed"):
+                    result.errors.append(f"Notification unavailable: {notified.status}")
+                    continue
+                await self.storage.mark_analyzed(email.message_id)
 
             except Exception as proc_exc:
-                logger.error("gmail_pipeline_item_failed", msg_id=email.message_id, error=str(proc_exc))
-                result.errors.append(f"Email {email.message_id} analysis failed: {proc_exc}")
+                logger.error("gmail_pipeline_item_failed", msg_id=email.message_id, error_type=type(proc_exc).__name__)
+                result.errors.append(f"Email {email.message_id} analysis failed: {type(proc_exc).__name__}")
 
         logger.info(
             "gmail_pipeline_completed",

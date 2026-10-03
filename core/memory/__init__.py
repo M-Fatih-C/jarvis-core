@@ -3,6 +3,7 @@
 from core.memory.models import (
     FeedbackRecord,
     FeedbackType,
+    MemoryAuthorizationContext,
     MemoryCandidate,
     MemoryFilters,
     MemoryKind,
@@ -12,10 +13,15 @@ from core.memory.models import (
     MemorySourceType,
     MemoryStatus,
 )
+from core.memory.consent import ConsentRecord, ConsentStatus, ConsentStore
 
 __all__ = [
+    "ConsentRecord",
+    "ConsentStatus",
+    "ConsentStore",
     "FeedbackRecord",
     "FeedbackType",
+    "MemoryAuthorizationContext",
     "MemoryCandidate",
     "MemoryFilters",
     "MemoryKind",

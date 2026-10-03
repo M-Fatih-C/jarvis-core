@@ -234,8 +234,8 @@ async def test_build_manager_auto_trigger_conditions(tmp_path):
 
     triggered = await mgr.evaluate_auto_trigger()
     assert triggered is True
-    mgr.renew.assert_awaited_once()
-    mgr.install.assert_awaited_once()
+    mgr.renew.assert_awaited_once_with(install_after=True)
+    mgr.install.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -332,3 +332,33 @@ async def test_ios_build_tools_execution(tmp_path):
     res_renew = await renew_tool.execute({})
     assert res_renew.success is True
     assert res_renew.data["renewed"] is True
+
+@pytest.mark.asyncio
+async def test_cross_process_lock_blocks_build_and_install(tmp_path):
+    from core.build_manager.manager import CrossProcessLock
+    first = CrossProcessLock(str(tmp_path / 'build.lock'))
+    mgr = BuildManager(state_file=str(tmp_path / 'state.json'))
+    mgr._cross_lock = CrossProcessLock(first.lock_file)
+    mgr.builder.build = AsyncMock()
+    assert first.acquire()
+    try:
+        assert not (await mgr.build()).success
+        assert not (await mgr.install()).success
+        mgr.builder.build.assert_not_called()
+    finally:
+        first.release()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('install_after,verified,expected', [(False, True, False), (True, False, False), (True, True, True)])
+async def test_renewal_requires_verified_install(tmp_path, install_after, verified, expected):
+    mgr = BuildManager(state_file=str(tmp_path / 'state.json'))
+    now = datetime.now(timezone.utc)
+    mgr.state.last_provisioning_info = ProvisioningInfo(expiration_date=now)
+    async def build(**kwargs):
+        mgr.state.last_provisioning_info = ProvisioningInfo(expiration_date=now + timedelta(days=7), days_remaining=7)
+        return BuildResult(success=True)
+    mgr.build = build
+    mgr.install = AsyncMock(return_value=InstallResult(success=True, verified=verified, device_id='test', bundle_id='com.example.test'))
+    result = await mgr.renew(install_after=install_after)
+    assert result['renewed'] is expected
+    assert bool(mgr.state.last_successful_renewal) is expected
