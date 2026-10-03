@@ -1,5 +1,6 @@
 import Foundation
 
+@MainActor
 public final class JarvisAPIService {
     public static let shared = JarvisAPIService()
 

@@ -28,6 +28,7 @@ class AgentRun(BaseModel):
 
     step_count: int = Field(default=0, description="Number of cognitive loops completed")
     tool_call_count: int = Field(default=0, description="Total number of tools executed")
+    completed_action_count: int = Field(default=0, description="Confirmed non-read tool results, retained when a later step fails")
 
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),

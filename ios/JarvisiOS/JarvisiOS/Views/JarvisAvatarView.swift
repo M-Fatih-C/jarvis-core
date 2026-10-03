@@ -3,6 +3,8 @@ import SwiftUI
 struct JarvisAvatarView: View {
     let state: JarvisVoiceState
     let level: Float
+    var diameter: CGFloat = 172
+    var showsState = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var tint: Color {
         switch state {
@@ -18,15 +20,17 @@ struct JarvisAvatarView: View {
             Canvas { context, size in
                 drawAvatar(context: &context, size: size)
             }
-            .frame(height: 172)
+            .frame(width: diameter, height: diameter)
             .background(RadialGradient(colors: [tint.opacity(0.12), .clear], center: .center, startRadius: 15, endRadius: 100))
-            Text(state.rawValue).font(.system(size: 10, weight: .semibold, design: .monospaced)).tracking(4).foregroundStyle(tint)
+            if showsState { Text(state.title).font(.caption).foregroundStyle(tint) }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Jarvis, \(state.rawValue)")
+        .accessibilityLabel("Jarvis, \(state.title)")
     }
     private func drawAvatar(context: inout GraphicsContext, size: CGSize) {
-                let center = CGPoint(x: size.width / 2, y: size.height / 2)
+                let scale = min(size.width, size.height) / 172
+                context.scaleBy(x: scale, y: scale)
+                let center = CGPoint(x: size.width / (2 * scale), y: size.height / (2 * scale))
                 let amplitude = CGFloat(level)
                 let radius: CGFloat = 42 + (reduceMotion ? 0 : amplitude * 12)
                 for i in 0..<3 {

@@ -170,3 +170,20 @@ async def test_verbal_approval_request_repairs_to_secure_card(test_runtime):
     assert run.state == AgentState.WAITING_APPROVAL
     assert run.tool_call_count == 0
     assert test_runtime.approval_store.get(run.pending_approval_id).user_id == 'synthetic-owner'
+
+
+async def test_partial_approved_action_is_reported_when_later_step_hits_limit(test_runtime):
+    from core.llm.schemas import LLMResponse
+    from core.models.tools import ToolCall
+    from core.agent.state_machine import AgentState
+    test_runtime._settings.max_tool_calls = 1
+    for n in range(2):
+        test_runtime._llm.queue_response(LLMResponse(tool_calls=[ToolCall(
+            id=f'proposal-{n}', name='reminders.create', arguments={'title': f'Synthetic task {n}', 'due_at': '2026-10-04T18:00:00+03:00'}
+        )]))
+    proposed = await test_runtime.run('Create two synthetic reminders', user_id='synthetic-owner')
+    completed = await test_runtime.resume_approval(proposed.pending_approval_id, user_id='synthetic-owner')
+    assert completed.state == AgentState.FAILED
+    assert completed.completed_action_count == 1
+    assert completed.tool_call_count == 1
+    assert '1 işlem tamamlandı ve doğrulandı' in completed.error

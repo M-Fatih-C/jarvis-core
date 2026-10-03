@@ -25,7 +25,7 @@ from core.logging.setup import get_logger
 from core.models.agent import AgentMode, AgentRun
 from core.models.approval import ApprovalRequest, ApprovalStatus
 from core.models.messages import ChatMessage, MessageRole
-from core.models.tools import ToolCall, ToolResult
+from core.models.tools import RiskLevel, ToolCall, ToolResult
 from core.policy.engine import PolicyEngine
 from core.policy.risk import PolicyDecisionType, PolicyRequest
 from core.time.temporal import sanitize_response_temporal_consistency
@@ -336,6 +336,8 @@ class AgentRuntime:
                     is_approved=False,
                 )
                 agent_run.tool_call_count += 1
+                if tool_result.success and tool.definition.risk_level != RiskLevel.R0_READ:
+                    agent_run.completed_action_count += 1
 
                 self._transition(run_id, AgentState.PROCESSING_TOOL_RESULT)
                 result_content = (
@@ -386,6 +388,8 @@ class AgentRuntime:
             is_approved=True,
         )
         agent_run.tool_call_count += 1
+        if tool_result.success and self._tools.get(tool_call.name).definition.risk_level != RiskLevel.R0_READ:
+            agent_run.completed_action_count += 1
         agent_run.pending_approval_id = None
         agent_run.pending_tool_call = None
 
@@ -404,7 +408,12 @@ class AgentRuntime:
         ))
 
         # Re-enter the multi-step cognitive loop seamlessly
-        completed_run = await self._step_loop(run_id)
+        try:
+            completed_run = await self._step_loop(run_id)
+        except Exception as exc:
+            logger.warning("approved_run_continuation_failed", run_id=str(run_id), error_type=type(exc).__name__)
+            self._transition_failed(run_id, str(exc))
+            return self._runs[run_id]
 
         # Post-run memory extraction if completed
         if self._memory is not None and completed_run.state == AgentState.COMPLETED:
@@ -479,6 +488,10 @@ class AgentRuntime:
                 pass
         if run_id in self._runs:
             run = self._runs[run_id]
+            if run.completed_action_count:
+                error_msg = (f"Bu istekte {run.completed_action_count} işlem tamamlandı ve doğrulandı. "
+                             "Kalan adımlar tamamlanamadı. Tekrar istemeden önce mevcut sonuçları kontrol edin. "
+                             f"Ayrıntı: {error_msg}")
             run.state = AgentState.FAILED
             run.error = error_msg
             run.updated_at = datetime.now(timezone.utc)

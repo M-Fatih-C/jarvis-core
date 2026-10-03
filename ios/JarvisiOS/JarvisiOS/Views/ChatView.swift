@@ -6,8 +6,10 @@ public struct ChatView: View {
     @StateObject private var voice = VoiceConversationService()
     @StateObject private var health = DeviceStatusViewModel()
     @Environment(\.scenePhase) private var scenePhase
+    @FocusState private var composerFocused: Bool
     @State private var microphonePressed = false
     @State private var voiceTurn = false
+    @State private var showSignIn = false
 
     public init() {}
 
@@ -16,242 +18,328 @@ public struct ChatView: View {
         if !auth.isAuthenticated || !health.isConnected { return .disconnected }
         return viewModel.isSending ? .thinking : voice.state
     }
+    private var canSend: Bool {
+        auth.isAuthenticated && !viewModel.isSending && voice.state != .listening &&
+        !viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    private var statusTitle: String {
+        if !auth.isAuthenticated { return "Giriş yaparak başla" }
+        if health.isChecking && !health.isConnected { return "Bağlanıyor…" }
+        if !health.isConnected { return "Mac bağlantısı bekleniyor" }
+        if viewModel.messages.last?.status == .waitingApproval { return "Onayın bekleniyor" }
+        if viewModel.isSending { return "Yanıt hazırlanıyor…" }
+        return voice.state == .idle ? "Hazır" : voice.state.title
+    }
 
     public var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                JarvisAvatarView(state: avatarState, level: voice.level)
-                if !voice.transcript.isEmpty && voice.state == .listening {
-                    Text(voice.transcript).font(.callout).padding(.horizontal)
-                }
-                if let error = voice.errorMessage {
-                    Text(error).font(.caption).foregroundStyle(.orange).padding(.horizontal)
-                }
-                Toggle("Sohbet modu · sessizlikte gönder", isOn: $voice.conversationMode)
-                    .font(.caption).padding(.horizontal)
-                    .disabled(!auth.isAuthenticated)
-                // Connection bar if error or status
-                if viewModel.connectionState != "Bağlı" {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
-                        Text(viewModel.connectionState)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.orange.opacity(0.1))
-                }
-
-                // Message list
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(viewModel.messages) { msg in
-                                ChatBubble(message: msg) { appID, dec, dig in
-                                    viewModel.respondToApproval(
-                                        messageId: msg.id,
-                                        approvalId: appID,
-                                        decision: dec,
-                                        actionDigest: dig,
-                                        userId: auth.userId, projectId: auth.projectId
-                                    )
-                                }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        if viewModel.messages.count <= 1 { welcome }
+                        ForEach(viewModel.messages) { message in
+                            ChatBubble(message: message, onCheckStatus: { checkPending() }) { id, decision, digest in
+                                viewModel.respondToApproval(messageId: message.id, approvalId: id,
+                                    decision: decision, actionDigest: digest,
+                                    userId: auth.userId, projectId: auth.projectId)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
+                        Color.clear.frame(height: 1).id("chat-bottom")
                     }
-                    .onChange(of: viewModel.messages.count) { _ in
-                        if let last = viewModel.messages.last {
-                            withAnimation {
-                                proxy.scrollTo(last.id, anchor: .bottom)
-                            }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 20)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .onChange(of: viewModel.messages) { _ in
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
+                }
+                .onChange(of: composerFocused) { focused in
+                    if focused {
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
                         }
                     }
                 }
-
-                // Input Bar
-                HStack(spacing: 12) {
-                    Image(systemName: voice.state == .listening ? "waveform" : "mic.fill")
-                        .font(.title2).foregroundStyle(voice.state == .listening ? .mint : .cyan)
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
-                        .accessibilityLabel("Konuşmak için basılı tutun; konuşmayı kesmek için basın")
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAction {
-                            if voice.state == .listening { voice.finishListening() }
-                            else if auth.isAuthenticated && !viewModel.isSending { Task { await voice.startListening() } }
-                        }
-                        .gesture(DragGesture(minimumDistance: 0)
-                            .onChanged { _ in
-                                guard !microphonePressed, auth.isAuthenticated, !viewModel.isSending else { return }
-                                microphonePressed = true
-                                Task {
-                                    await voice.startListening()
-                                    if !microphonePressed { voice.stop() }
-                                }
-                            }
-                            .onEnded { _ in
-                                microphonePressed = false
-                                voice.finishListening()
-                            })
-                    TextField("Jarvis'e bir talimat verin...", text: $viewModel.inputText, axis: .vertical)
-                        .padding(10)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(18)
-                        .lineLimit(1...4)
-
-                    Button(action: {
-                        viewModel.sendMessage(userId: auth.userId, projectId: auth.projectId)
-                    }) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 32))
-                            .foregroundColor(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .gray : .blue)
-                    }
-                    .disabled(viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isSending || !auth.isAuthenticated)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color(.systemBackground))
             }
-            .onAppear {
-                voice.onTurn = { text in
-                    voiceTurn = true
-                    viewModel.inputText = text
-                    viewModel.sendMessage(userId: auth.userId, projectId: auth.projectId)
+            .background(Color(.systemBackground))
+            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+            .navigationTitle("Jarvis")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    VStack(spacing: 3) {
+                        Text("Jarvis").font(.headline)
+                        HStack(spacing: 5) {
+                            Circle().fill(health.isConnected ? Color.mint : Color.secondary).frame(width: 5, height: 5)
+                            Text(statusTitle).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
                 }
-                viewModel.onResponse = { text in
-                    if voiceTurn { voice.speak(text); voiceTurn = false }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if composerFocused {
+                        Button { composerFocused = false } label: {
+                            Image(systemName: "keyboard.chevron.compact.down").frame(width: 44, height: 44)
+                        }.accessibilityLabel("Klavyeyi kapat")
+                    } else {
+                        Menu {
+                            Toggle("Eller serbest sohbet", isOn: $voice.conversationMode)
+                                .disabled(!auth.isAuthenticated)
+                            Button("Bağlantıyı kontrol et", systemImage: "arrow.clockwise") { checkPending() }
+                            if voice.state == .speaking || voice.state == .listening {
+                                Button("Sesi durdur", systemImage: "stop.fill") { stopVoice() }
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                        }.accessibilityLabel("Sohbet seçenekleri")
+                    }
                 }
-                viewModel.onFailure = { error in voice.fail(error); voiceTurn = false }
             }
+            .sheet(isPresented: $showSignIn) { SettingsView() }
+            .onAppear { connectVoice() }
             .task(id: auth.isAuthenticated) {
                 if auth.isAuthenticated { await viewModel.resumePending(userId: auth.userId, projectId: auth.projectId) }
             }
             .task(id: auth.isAuthenticated) {
                 guard auth.isAuthenticated else { return }
                 while !Task.isCancelled {
-                    if scenePhase == .active {
-                        await health.checkStatus()
-                        viewModel.connectionState = health.isConnected ? "Bağlı" : "Mac bağlantısı bekleniyor"
-                    }
+                    if scenePhase == .active { await health.checkStatus() }
                     do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { break }
                 }
             }
             .onChange(of: voice.conversationMode) { enabled in
-                if enabled && auth.isAuthenticated && !viewModel.isSending { Task { await voice.startListening() } }
-                else if !enabled { voice.stop() }
+                if enabled && auth.isAuthenticated && !viewModel.isSending {
+                    composerFocused = false
+                    Task { await voice.startListening() }
+                } else if !enabled { voice.stop() }
             }
             .onChange(of: scenePhase) { phase in
-                if phase != .active { voice.conversationMode = false; voice.stop(); microphonePressed = false }
-                else if auth.isAuthenticated { Task { await viewModel.resumePending(userId: auth.userId, projectId: auth.projectId) } }
+                if phase != .active { stopVoice(); microphonePressed = false }
+                else if auth.isAuthenticated { checkPending() }
             }
-            .onChange(of: auth.userId) { _ in voice.conversationMode = false; voice.stop() }
-            .onDisappear { voice.conversationMode = false; voice.stop() }
-            .navigationTitle("Jarvis AI")
-            .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: auth.userId) { _ in stopVoice() }
+            .onDisappear { stopVoice() }
         }
+    }
+
+    private var welcome: some View {
+        VStack(spacing: 14) {
+            JarvisAvatarView(state: avatarState, level: voice.level, diameter: 104, showsState: false)
+            Text("Bugün ne yapalım?").font(.title2.weight(.semibold))
+            Text("Bir soru sor, gününü planla ya da konuşmaya başla.")
+                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                suggestion("Bugünkü programım", symbol: "calendar", prompt: "Bugünkü programım nedir?")
+                suggestion("Beni neler bekliyor?", symbol: "sparkles", prompt: "Bu haftaki programım nedir?")
+            }.padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 12)
+    }
+
+    private func suggestion(_ title: String, symbol: String, prompt: String) -> some View {
+        Button {
+            viewModel.inputText = prompt
+            composerFocused = true
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.caption.weight(.medium)).padding(12)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain)
+    }
+
+    private var composer: some View {
+        VStack(spacing: 8) {
+            if voice.state == .listening || voice.state == .speaking {
+                HStack(spacing: 10) {
+                    JarvisAvatarView(state: voice.state, level: voice.level, diameter: 64, showsState: false)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(voice.state.title).font(.subheadline.weight(.semibold))
+                        Text(voice.state == .listening ? (voice.transcript.isEmpty ? "Seni dinliyorum…" : voice.transcript) : "Konuşmayı kesmek için mikrofona bas.")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    Button(action: stopVoice) {
+                        Image(systemName: "stop.fill").frame(width: 44, height: 44)
+                    }.accessibilityLabel("Sesi durdur")
+                }
+            }
+            if let error = voice.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !auth.isAuthenticated {
+                Button { showSignIn = true } label: {
+                    Label("Jarvis’e bağlanmak için giriş yap", systemImage: "person.crop.circle")
+                        .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, minHeight: 44)
+                }.buttonStyle(.bordered)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                microphone
+                TextField("Mesaj yaz…", text: $viewModel.inputText, axis: .vertical)
+                    .font(.body).lineLimit(1...5).padding(.vertical, 12)
+                    .focused($composerFocused)
+                    .accessibilityLabel("Mesaj")
+                Button(action: sendText) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(canSend ? Color.black : Color.secondary)
+                        .frame(width: 44, height: 44)
+                        .background(canSend ? Color.mint : Color(.tertiarySystemBackground), in: Circle())
+                }
+                .disabled(!canSend).accessibilityLabel("Mesajı gönder")
+            }
+            .padding(6)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 26))
+            .overlay(RoundedRectangle(cornerRadius: 26).stroke(composerFocused ? Color.mint.opacity(0.45) : Color.white.opacity(0.08)))
+            if !composerFocused {
+                Text(voice.conversationMode ? "Eller serbest açık · Sessiz kaldığında gönderilir" : "Konuşmak için mikrofonu basılı tut")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 8)
+        .background(.bar)
+    }
+
+    private var microphone: some View {
+        Image(systemName: voice.state == .listening ? "waveform" : "mic.fill")
+            .font(.system(size: 19, weight: .medium))
+            .foregroundStyle(voice.state == .listening ? Color.mint : Color.secondary)
+            .frame(width: 44, height: 44).contentShape(Circle())
+            .accessibilityLabel("Konuşmak için basılı tut")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                if voice.state == .listening { voice.finishListening() }
+                else if auth.isAuthenticated && !viewModel.isSending { Task { await voice.startListening() } }
+            }
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !microphonePressed, auth.isAuthenticated, !viewModel.isSending else { return }
+                    microphonePressed = true
+                    composerFocused = false
+                    Task {
+                        await voice.startListening()
+                        if !microphonePressed { voice.stop() }
+                    }
+                }
+                .onEnded { _ in
+                    microphonePressed = false
+                    voice.finishListening()
+                })
+    }
+
+    private func sendText() {
+        guard canSend else { return }
+        voiceTurn = false
+        stopVoice()
+        viewModel.sendMessage(userId: auth.userId, projectId: auth.projectId)
+    }
+    private func checkPending() {
+        Task {
+            await health.checkStatus()
+            await viewModel.resumePending(userId: auth.userId, projectId: auth.projectId)
+        }
+    }
+    private func stopVoice() { voice.conversationMode = false; voice.stop() }
+    private func connectVoice() {
+        voice.onTurn = { text in
+            voiceTurn = true
+            viewModel.inputText = text
+            viewModel.sendMessage(userId: auth.userId, projectId: auth.projectId)
+        }
+        viewModel.onResponse = { text in
+            if voiceTurn { voice.speak(text); voiceTurn = false }
+        }
+        viewModel.onFailure = { error in voice.fail(error); voiceTurn = false }
     }
 }
 
 struct ChatBubble: View {
     let message: ChatMessageItem
+    var onCheckStatus: (() -> Void)? = nil
     var onApprovalAction: ((String, String, String?) -> Void)? = nil
 
     var body: some View {
-        HStack {
-            if message.sender == .user {
-                Spacer()
+        HStack(alignment: .top, spacing: 0) {
+            if message.sender == .user { Spacer(minLength: 36) }
+            VStack(alignment: .leading, spacing: 10) {
+                if message.sender == .jarvis {
+                    Text("JARVIS").font(.system(size: 10, weight: .semibold)).tracking(1.5).foregroundStyle(.mint)
+                }
+                if message.status == .failed {
+                    Label("Yanıt alınamadı", systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+                    DisclosureGroup("Ayrıntılar") { Text(message.text).font(.caption).textSelection(.enabled) }
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("İsteğin durumunu kontrol et") { onCheckStatus?() }
+                        .font(.subheadline).frame(minHeight: 44)
+                } else if !message.text.isEmpty && message.approvalData == nil {
+                    Text(LocalizedStringKey(message.text)).font(.body).lineSpacing(4).textSelection(.enabled)
+                }
+                if let approval = message.approvalData { approvalCard(approval) }
+                if message.status == .queued || message.status == .running {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(message.status == .queued ? "İletiliyor…" : "Yanıt hazırlanıyor…")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }.padding(.vertical, 4)
+                }
+                Text(message.timestamp, style: .time).font(.caption2).foregroundStyle(.tertiary)
             }
-
-            VStack(alignment: message.sender == .user ? .trailing : .leading, spacing: 4) {
-                // Main text content
+            .padding(message.sender == .user ? 14 : 0)
+            .background(message.sender == .user ? Color(.secondarySystemBackground) : .clear, in: RoundedRectangle(cornerRadius: 20))
+            .contextMenu {
                 if !message.text.isEmpty {
-                    Text(message.text)
-                        .font(.body)
-                        .foregroundColor(message.sender == .user ? .white : .primary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(message.sender == .user ? Color.blue : Color(.secondarySystemBackground))
-                        .cornerRadius(16)
+                    Button("Kopyala", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.text }
                 }
-
-                // Interactive Human-in-the-Loop Approval Card
-                if let approval = message.approvalData {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Image(systemName: "lock.shield.fill")
-                                .foregroundColor(.orange)
-                            Text("İşlem Onayı Gerekli (R2/R4)")
-                                .font(.caption.bold())
-                                .foregroundColor(.orange)
-                        }
-
-                        Text("Hedef Eylem: \(approval.pendingTool)")
-                            .font(.subheadline.bold())
-
-                        ForEach(approval.arguments.sorted(by: { $0.key < $1.key }), id: \.key) { k, v in
-                            HStack {
-                                Text("\(k):")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                                Text(v)
-                                    .font(.caption)
-                            }
-                        }
-
-                        HStack(spacing: 12) {
-                            Button("Reddet") {
-                                onApprovalAction?(approval.approvalId, "rejected", approval.actionDigest)
-                            }
-                            .buttonStyle(.bordered)
-                            .tint(.red)
-
-                            Button("Onayla ve Yürüt") {
-                                onApprovalAction?(approval.approvalId, "approved", approval.actionDigest)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.green)
-                        }
-                        .padding(.top, 4)
-                    }
-                    .padding(12)
-                    .background(Color.orange.opacity(0.1))
-                    .cornerRadius(12)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.orange.opacity(0.3), lineWidth: 1)
-                    )
-                }
-
-                // Status Indicator
-                HStack(spacing: 4) {
-                    if message.status == .queued || message.status == .running {
-                        ProgressView()
-                            .scaleEffect(0.6)
-                        Text(message.status.rawValue)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    } else if message.status == .failed {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                        Text(message.status.rawValue)
-                            .font(.caption2)
-                            .foregroundColor(.red)
-                    }
-
-                    Text(message.timestamp, style: .time)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, 4)
             }
+            if message.sender == .jarvis { Spacer(minLength: 12) }
+        }
+        .frame(maxWidth: .infinity, alignment: message.sender == .user ? .trailing : .leading)
+    }
 
-            if message.sender == .jarvis {
-                Spacer()
+    private func approvalCard(_ approval: PendingApprovalData) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Onayın gerekiyor", systemImage: "hand.raised.fill").font(.subheadline.weight(.semibold)).foregroundStyle(.orange)
+            Text(actionTitle(approval.pendingTool)).font(.headline)
+            ForEach(approval.arguments.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(argumentTitle(key)).font(.caption).foregroundStyle(.secondary)
+                    Text(argumentValue(key, value)).font(.subheadline).textSelection(.enabled)
+                }
+            }
+            Text("Yalnızca yukarıdaki işlem onaylandıktan sonra uygulanır.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button { onApprovalAction?(approval.approvalId, "rejected", approval.actionDigest) } label: {
+                    Text("Vazgeç").frame(maxWidth: .infinity, minHeight: 28)
+                }.buttonStyle(.bordered).controlSize(.large)
+                Button { onApprovalAction?(approval.approvalId, "approved", approval.actionDigest) } label: {
+                    Text("Onayla").frame(maxWidth: .infinity, minHeight: 28)
+                }
+                    .buttonStyle(.borderedProminent).tint(.mint).foregroundStyle(.black)
+                    .controlSize(.large)
             }
         }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.orange.opacity(0.3)))
+    }
+    private func actionTitle(_ tool: String) -> String {
+        ["calendar.create_event": "Takvime etkinlik ekle", "calendar.update_event": "Etkinliği güncelle",
+         "calendar.delete_event": "Etkinliği sil", "reminders.create": "Hatırlatıcı ekle"][tool] ?? tool
+    }
+    private func argumentTitle(_ key: String) -> String {
+        ["title": "Başlık", "start": "Başlangıç", "end": "Bitiş", "notes": "Notlar", "location": "Konum",
+         "due_date": "Son tarih", "alarm_minutes_before": "Kaç dakika önce hatırlatılsın", "calendar_id": "Takvim", "list_id": "Liste"][key] ?? key
+    }
+    private func argumentValue(_ key: String, _ value: String) -> String {
+        guard ["start", "end", "due_date"].contains(key) else { return value }
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = parser.date(from: value) ?? ISO8601DateFormatter().date(from: value) else { return value }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "tr_TR")
+        formatter.timeZone = TimeZone(identifier: "Europe/Istanbul")
+        formatter.dateFormat = "d MMMM yyyy, EEEE · HH:mm"
+        return formatter.string(from: date) + " (Türkiye)"
     }
 }

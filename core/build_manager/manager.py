@@ -184,8 +184,8 @@ class BuildManager:
         )
         self.state.last_device_info = dev
         self._save_state()
-        if not dev or not dev.reachable:
-            await self.notifier.notify(NotificationEvent.DEVICE_UNAVAILABLE)
+        # Device probes are status reads, not actionable failures. A sleeping or
+        # disconnected iPhone must not generate a banner on every status check.
         return dev
 
     async def build(
@@ -451,6 +451,9 @@ class BuildManager:
             logger.info("auto_trigger_skipped_not_opted_in")
             return False
 
+        if not self.state.last_provisioning_info or not self.state.last_provisioning_info.needs_renewal:
+            return False
+
         # Cooldown guard against repeated 15-minute rebuild loops
         if self.state.last_renewal_attempt and self.state.renewal_retry_count >= self.state.renewal_max_retries:
             elapsed = (datetime.now(timezone.utc) - self.state.last_renewal_attempt).total_seconds()
@@ -465,6 +468,9 @@ class BuildManager:
         )
         if not dev or not dev.reachable:
             logger.info("auto_trigger_device_not_reachable")
+            self.state.status = BuildLifecycleState.USER_ACTION_REQUIRED
+            self._save_state()
+            await self.notifier.notify(NotificationEvent.USER_ACTION_REQUIRED)
             return False
 
         needs_action = False

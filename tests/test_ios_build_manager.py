@@ -36,6 +36,22 @@ from core.tools.ios_build import (
 )
 
 
+@pytest.mark.asyncio
+async def test_routine_build_notifications_are_silent_and_failures_deduplicate(tmp_path, monkeypatch):
+    monkeypatch.setattr(BuildNotifier, 'STATE_PATH', tmp_path / 'notifications.sqlite')
+    process = MagicMock(returncode=0)
+    process.communicate = AsyncMock(return_value=(b'', b''))
+    with patch('core.build_manager.notifier.asyncio.create_subprocess_exec', AsyncMock(return_value=process)) as dispatch:
+        for event in (NotificationEvent.DEVICE_UNAVAILABLE, NotificationEvent.BUILD_SUCCEEDED, NotificationEvent.INSTALL_SUCCEEDED):
+            assert not await BuildNotifier.notify(event)
+        dispatch.assert_not_awaited()
+        assert await BuildNotifier.notify(NotificationEvent.USER_ACTION_REQUIRED, detail='private diagnostic')
+        # A fresh notifier uses the same durable reservation after process restart.
+        assert not await BuildNotifier().notify(NotificationEvent.USER_ACTION_REQUIRED)
+        assert dispatch.await_count == 1
+        assert 'private diagnostic' not in str(dispatch.call_args)
+
+
 @pytest.fixture
 def mock_devicectl_json(tmp_path):
     """Create sample devicectl list output JSON."""

@@ -5,6 +5,17 @@ import SwiftUI
 public enum JarvisVoiceState: String {
     case idle = "IDLE", listening = "LISTENING", thinking = "THINKING"
     case speaking = "SPEAKING", error = "ERROR", disconnected = "DISCONNECTED"
+
+    var title: String {
+        switch self {
+        case .idle: return "Hazır"
+        case .listening: return "Dinliyorum"
+        case .thinking: return "Yanıt hazırlanıyor"
+        case .speaking: return "Konuşuyorum"
+        case .error: return "Ses bağlantısını kontrol et"
+        case .disconnected: return "Bağlantı bekleniyor"
+        }
+    }
 }
 
 /// Foreground-only speech capture. Voice and text submit through the same chat model.
@@ -92,7 +103,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
             lastVoice = Date()
             state = .listening
             recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, self.generation == sessionID else { return }
                     if let result { self.transcript = result.bestTranscription.formattedString }
                     if result?.isFinal == true { self.submitCapturedTurn() }
@@ -105,7 +116,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
                 var sum: Float = 0
                 for i in 0..<Int(buffer.frameLength) { sum += samples[i] * samples[i] }
                 let rms = sqrt(sum / Float(buffer.frameLength))
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, self.generation == sessionID, self.state == .listening else { return }
                     self.level = min(1, rms * 8)
                     if rms > 0.012 { self.lastVoice = Date() }
@@ -115,7 +126,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
             engine.prepare()
             try engine.start()
             silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, self.state == .listening else { return }
                     let now = Date()
                     // Bound every capture, even when the phone is left unattended.
@@ -172,7 +183,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
         synthesizer.write(utterance) { [weak self] buffer in
             let result = writer.append(buffer)
             if let result {
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, self.generation == id else {
                         if case .success(let url) = result { try? FileManager.default.removeItem(at: url) }
                         return
@@ -201,7 +212,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
             // Measure the currently playing synthesized PCM audio, not elapsed text
             // or an independent animation. AVAudioPlayer meters actual output frames.
             meter = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self, let player = self.player else { return }
                     player.updateMeters()
                     self.level = min(1, pow(10, player.averagePower(forChannel: 0) / 20) * 4)
@@ -225,6 +236,7 @@ final class VoiceConversationService: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     func stop() {
+        errorMessage = nil
         generation = UUID()
         finishTask?.cancel(); finishTask = nil
         stopCapture()
