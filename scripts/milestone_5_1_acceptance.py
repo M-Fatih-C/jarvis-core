@@ -272,7 +272,7 @@ async def run_strict_acceptance() -> AcceptanceReport:
     # ---------------------------------------------------------
     # 7. Physical-Device App Launch
     # ---------------------------------------------------------
-    if not signed_artifact_ready:
+    if not signed_artifact_ready or not (install_res.success and install_res.verified):
         report.record(
             "7. Physical-Device App Launch",
             "BLOCKED: PREREQUISITE_FAILED",
@@ -280,7 +280,47 @@ async def run_strict_acceptance() -> AcceptanceReport:
             is_mock=False
         )
     else:
-        report.record("7. Physical-Device App Launch", "SKIPPED", "Awaiting physical installation verification.", is_mock=False)
+        try:
+            launch_cmd = [
+                "xcrun", "devicectl", "device", "process", "launch",
+                "--device", dev.identifier,
+                "com.mfatihc.jarvis"
+            ]
+            launch_proc = await asyncio.create_subprocess_exec(
+                *launch_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout_l, stderr_l = await launch_proc.communicate()
+            combined_l = (
+                stdout_l.decode("utf-8", errors="replace") + "\n" +
+                stderr_l.decode("utf-8", errors="replace")
+            ).strip()
+
+            if launch_proc.returncode == 0:
+                report.record(
+                    "7. Physical-Device App Launch",
+                    "PASS",
+                    f"Jarvis application launched successfully on iPhone 13 ({dev.identifier}).",
+                    is_mock=False
+                )
+            elif "not been explicitly trusted" in combined_l.lower() or "trust" in combined_l.lower():
+                report.record(
+                    "7. Physical-Device App Launch",
+                    "BLOCKED: USER_TRUST_REQUIRED",
+                    "Application installed successfully! On your iPhone 13, go to: "
+                    "Settings -> General -> VPN & Device Management -> Developer App (muhammedfatihcetintas54@gmail.com) -> tap 'Trust' to allow launch.",
+                    is_mock=False
+                )
+            else:
+                report.record(
+                    "7. Physical-Device App Launch",
+                    "BLOCKED: LAUNCH_ERROR",
+                    f"Launch output: {combined_l}",
+                    is_mock=False
+                )
+        except Exception as exc:
+            report.record("7. Physical-Device App Launch", "FAILED", str(exc), is_mock=False)
 
     # ---------------------------------------------------------
     # 8. Wireless Installation
