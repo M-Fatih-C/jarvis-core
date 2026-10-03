@@ -87,6 +87,7 @@ class AppInstaller:
 
         cmd = [
             "xcrun", "devicectl", "device", "install", "app",
+            "--timeout", "60",
             "--device", device_identifier,
             app_bundle_path
         ]

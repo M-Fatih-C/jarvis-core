@@ -9,6 +9,7 @@ public final class AuthViewModel: ObservableObject {
     @Published public var userId: String = ""
     @Published public var userEmail: String = ""
     @Published public var projectId: String = "jarvis-local-dev"
+    @Published public var apiKey: String = ""
     @Published public var isLoading: Bool = false
     @Published public var errorMessage: String? = nil
 
@@ -16,7 +17,9 @@ public final class AuthViewModel: ObservableObject {
     private let keyUID = "firebase_user_uid"
     private let keyEmail = "firebase_user_email"
     private let keyToken = "firebase_id_token"
+    private let keyRefreshToken = "firebase_refresh_token"
     private let keyProject = "firebase_project_id"
+    private let keyApiKey = "firebase_api_key"
 
     public init() {
         restoreSession()
@@ -29,11 +32,21 @@ public final class AuthViewModel: ObservableObject {
             self.userId = storedUID
             self.userEmail = keychain.read(key: keyEmail) ?? ""
             self.projectId = keychain.read(key: keyProject) ?? "jarvis-local-dev"
+            self.apiKey = keychain.read(key: keyApiKey) ?? ""
             self.isAuthenticated = true
+
+            // Check if token can be refreshed automatically
+            if let refresh = keychain.read(key: keyRefreshToken), !refresh.isEmpty {
+                Task {
+                    await self.refreshCurrentToken(refreshToken: refresh)
+                }
+            }
         } else {
             self.isAuthenticated = false
             self.userId = ""
             self.userEmail = ""
+            self.apiKey = keychain.read(key: keyApiKey) ?? ""
+            self.projectId = keychain.read(key: keyProject) ?? "jarvis-local-dev"
         }
     }
 
@@ -47,18 +60,23 @@ public final class AuthViewModel: ObservableObject {
         self.isLoading = true
         self.errorMessage = nil
 
-        // Genuine Firebase Authentication request
         do {
             let session = try await FirebaseAuthService.shared.authenticate(
-                email: email,
+                email: email.trimmingCharacters(in: .whitespaces),
                 password: pass,
-                projectId: self.projectId
+                apiKey: self.apiKey.isEmpty ? nil : self.apiKey
             )
             // Save to secure Keychain storage
             keychain.save(key: keyUID, value: session.uid)
             keychain.save(key: keyEmail, value: session.email)
             keychain.save(key: keyToken, value: session.idToken)
+            if let ref = session.refreshToken {
+                keychain.save(key: keyRefreshToken, value: ref)
+            }
             keychain.save(key: keyProject, value: self.projectId)
+            if !self.apiKey.isEmpty {
+                keychain.save(key: keyApiKey, value: self.apiKey)
+            }
 
             self.userId = session.uid
             self.userEmail = session.email
@@ -68,7 +86,25 @@ public final class AuthViewModel: ObservableObject {
         } catch {
             self.isLoading = false
             self.errorMessage = error.localizedDescription
+            self.isAuthenticated = false
             return false
+        }
+    }
+
+    /// Refresh token automatically
+    public func refreshCurrentToken(refreshToken: String) async {
+        do {
+            let newSession = try await FirebaseAuthService.shared.refreshToken(
+                refreshToken: refreshToken,
+                apiKey: self.apiKey.isEmpty ? nil : self.apiKey
+            )
+            keychain.save(key: keyToken, value: newSession.idToken)
+            if let ref = newSession.refreshToken {
+                keychain.save(key: keyRefreshToken, value: ref)
+            }
+        } catch {
+            // Fail closed: If token is invalidated or revoked, sign out
+            signOut()
         }
     }
 
@@ -77,6 +113,7 @@ public final class AuthViewModel: ObservableObject {
         keychain.delete(key: keyUID)
         keychain.delete(key: keyEmail)
         keychain.delete(key: keyToken)
+        keychain.delete(key: keyRefreshToken)
         self.isAuthenticated = false
         self.userId = ""
         self.userEmail = ""
@@ -88,5 +125,15 @@ public final class AuthViewModel: ObservableObject {
         guard !trimmed.isEmpty else { return }
         self.projectId = trimmed
         keychain.save(key: keyProject, value: trimmed)
+    }
+
+    public func updateApiKey(_ newKey: String) {
+        let trimmed = newKey.trimmingCharacters(in: .whitespaces)
+        self.apiKey = trimmed
+        if trimmed.isEmpty {
+            keychain.delete(key: keyApiKey)
+        } else {
+            keychain.save(key: keyApiKey, value: trimmed)
+        }
     }
 }

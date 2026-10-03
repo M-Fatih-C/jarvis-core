@@ -23,12 +23,16 @@ public enum CommandQueueError: LocalizedError {
     }
 }
 
-/// Dispatches user commands and approvals through the secure Firestore Cloud Command Queue.
-/// Architecture:
-/// SwiftUI → Firebase Auth → Firestore (users/{uid}/commands) → Mac CommandWorker → Qwen → Firestore result → SwiftUI
+/// Dispatches user commands and approvals through authenticated Firestore REST API.
+/// Fail-closed security:
+/// - Unauthenticated requests are rejected.
+/// - Network errors fail closed immediately and are never disguised as success.
+/// - Offline commands are never represented as completed operations.
+/// - Command identifiers and idempotency keys are preserved for safe retries.
 public final class FirebaseCommandQueueService {
     public static let shared = FirebaseCommandQueueService()
     private let session = URLSession.shared
+    private let pendingCommandsKey = "jarvis_pending_command_ids"
 
     private init() {}
 
@@ -39,14 +43,25 @@ public final class FirebaseCommandQueueService {
         return URL(string: str)
     }
 
+    /// Retrieve the current authenticated ID token from Keychain.
+    private func getAuthToken() throws -> String {
+        guard let token = KeychainHelper.shared.read(key: "firebase_id_token"),
+              !token.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw CommandQueueError.unauthenticated
+        }
+        return token.trimmingCharacters(in: .whitespaces)
+    }
+
     /// Submit a new user chat message into the Firestore Command Queue.
     public func submitChatCommand(
         message: String,
         userId: String,
-        projectId: String
+        projectId: String,
+        existingCommandId: String? = nil,
+        existingIdempotencyKey: String? = nil
     ) async throws -> String {
-        let commandId = UUID().uuidString
-        let idempotencyKey = UUID().uuidString
+        let commandId = existingCommandId ?? UUID().uuidString
+        let idempotencyKey = existingIdempotencyKey ?? UUID().uuidString
         let nowStr = ISO8601DateFormatter().string(from: Date())
 
         let commandPayload: [String: Any] = [
@@ -65,6 +80,9 @@ public final class FirebaseCommandQueueService {
             "available_at": nowStr
         ]
 
+        // Persist identifier before transmission for retry safety
+        rememberPendingCommand(commandId)
+
         try await writeCommandDocument(commandId: commandId, userId: userId, projectId: projectId, payload: commandPayload)
         return commandId
     }
@@ -75,10 +93,12 @@ public final class FirebaseCommandQueueService {
         decision: String,
         actionDigest: String?,
         userId: String,
-        projectId: String
+        projectId: String,
+        existingCommandId: String? = nil,
+        existingIdempotencyKey: String? = nil
     ) async throws -> String {
-        let commandId = UUID().uuidString
-        let idempotencyKey = UUID().uuidString
+        let commandId = existingCommandId ?? UUID().uuidString
+        let idempotencyKey = existingIdempotencyKey ?? UUID().uuidString
         let nowStr = ISO8601DateFormatter().string(from: Date())
 
         var payloadData: [String: Any] = [
@@ -103,6 +123,9 @@ public final class FirebaseCommandQueueService {
             "available_at": nowStr
         ]
 
+        // Persist identifier before transmission for retry safety
+        rememberPendingCommand(commandId)
+
         try await writeCommandDocument(commandId: commandId, userId: userId, projectId: projectId, payload: commandPayload)
         return commandId
     }
@@ -126,10 +149,12 @@ public final class FirebaseCommandQueueService {
                 }
 
                 if cmd.status == .completed {
+                    forgetPendingCommand(commandId)
                     return cmd
                 } else if cmd.status == .waitingApproval {
                     return cmd
                 } else if cmd.status == .failed {
+                    forgetPendingCommand(commandId)
                     throw CommandQueueError.commandFailed(cmd.error ?? "Bilinmeyen hata oluştu.")
                 }
             }
@@ -140,7 +165,7 @@ public final class FirebaseCommandQueueService {
         throw CommandQueueError.commandTimeout
     }
 
-    // --- Private Document Helpers (Firestore REST API bridge) ---
+    // --- Private Document Helpers (Authenticated Firestore REST API) ---
 
     private func writeCommandDocument(
         commandId: String,
@@ -148,24 +173,37 @@ public final class FirebaseCommandQueueService {
         projectId: String,
         payload: [String: Any]
     ) async throws {
-        // Encode as Firestore fields or local memory storage bridge
+        let authToken = try getAuthToken()
+
         guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/commands?documentId=\(commandId)") else {
-            throw CommandQueueError.networkError("Invalid Firestore endpoint")
+            throw CommandQueueError.networkError("Geçersiz Firestore URL'si")
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
-        // Transform payload dictionary into Firestore REST format
         let firestoreFields = encodeToFirestoreFields(payload)
         let body: [String: Any] = ["fields": firestoreFields]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        let (_, response) = try await session.data(for: request)
-        if let httpRes = response as? HTTPURLResponse, httpRes.statusCode >= 400 {
-            // Note: If cloud endpoint requires local proxy or admin token, record in local queue simulator
-            loggerFallbackStore(commandId: commandId, userId: userId, payload: payload)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            // Fail closed: Network error is reported immediately and never disguised as success
+            throw CommandQueueError.networkError("Firestore bağlantı hatası: \(error.localizedDescription)")
+        }
+
+        guard let httpRes = response as? HTTPURLResponse else {
+            throw CommandQueueError.networkError("Sunucudan geçerli bir HTTP yanıtı alınamadı.")
+        }
+
+        guard httpRes.statusCode == 200 || httpRes.statusCode == 201 else {
+            let errorBody = String(data: data, encoding: .utf8) ?? "Bilinmeyen hata"
+            throw CommandQueueError.networkError("Firestore komut yazma reddedildi (HTTP \(httpRes.statusCode)): \(errorBody)")
         }
     }
 
@@ -174,43 +212,67 @@ public final class FirebaseCommandQueueService {
         userId: String,
         projectId: String
     ) async throws -> CloudCommandDTO? {
+        let authToken = try getAuthToken()
+
         guard let url = firestoreDocumentURL(projectId: projectId, path: "users/\(userId)/commands/\(commandId)") else {
-            return nil
+            throw CommandQueueError.networkError("Geçersiz Firestore URL'si")
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
 
+        let data: Data
+        let response: URLResponse
         do {
-            let (data, response) = try await session.data(for: request)
-            guard let httpRes = response as? HTTPURLResponse, httpRes.statusCode == 200 else {
-                return readFallbackStore(commandId: commandId)
-            }
-
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let fields = json["fields"] as? [String: Any] {
-                let decoded = decodeFromFirestoreFields(fields)
-                let jsonData = try JSONSerialization.data(withJSONObject: decoded)
-                return try? JSONDecoder().decode(CloudCommandDTO.self, from: jsonData)
-            }
+            (data, response) = try await session.data(for: request)
         } catch {
-            return readFallbackStore(commandId: commandId)
+            throw CommandQueueError.networkError("Firestore okuma bağlantı hatası: \(error.localizedDescription)")
         }
-        return readFallbackStore(commandId: commandId)
+
+        guard let httpRes = response as? HTTPURLResponse else {
+            throw CommandQueueError.networkError("Sunucudan geçerli bir HTTP yanıtı alınamadı.")
+        }
+
+        if httpRes.statusCode == 404 {
+            return nil
+        }
+
+        guard httpRes.statusCode == 200 else {
+            throw CommandQueueError.networkError("Firestore komut okuma başarısız (HTTP \(httpRes.statusCode))")
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let fields = json["fields"] as? [String: Any] else {
+            throw CommandQueueError.invalidResponse
+        }
+
+        let decoded = decodeFromFirestoreFields(fields)
+        let jsonData = try JSONSerialization.data(withJSONObject: decoded)
+        return try JSONDecoder().decode(CloudCommandDTO.self, from: jsonData)
     }
 
-    // In-memory fallback queue for local development when network to cloud is restricted
-    private var localFallbackCommands: [String: [String: Any]] = [:]
+    // --- Idempotency & Safe Retry Tracking ---
 
-    private func loggerFallbackStore(commandId: String, userId: String, payload: [String: Any]) {
-        localFallbackCommands[commandId] = payload
+    private func rememberPendingCommand(_ id: String) {
+        var list = UserDefaults.standard.stringArray(forKey: pendingCommandsKey) ?? []
+        if !list.contains(id) {
+            list.append(id)
+            UserDefaults.standard.set(list, forKey: pendingCommandsKey)
+        }
     }
 
-    private func readFallbackStore(commandId: String) -> CloudCommandDTO? {
-        guard let raw = localFallbackCommands[commandId] else { return nil }
-        guard let data = try? JSONSerialization.data(withJSONObject: raw) else { return nil }
-        return try? JSONDecoder().decode(CloudCommandDTO.self, from: data)
+    private func forgetPendingCommand(_ id: String) {
+        var list = UserDefaults.standard.stringArray(forKey: pendingCommandsKey) ?? []
+        list.removeAll(where: { $0 == id })
+        UserDefaults.standard.set(list, forKey: pendingCommandsKey)
     }
+
+    public func getPendingCommandIds() -> [String] {
+        return UserDefaults.standard.stringArray(forKey: pendingCommandsKey) ?? []
+    }
+
+    // --- Firestore Field Serialization ---
 
     private func encodeToFirestoreFields(_ dict: [String: Any]) -> [String: Any] {
         var fields: [String: Any] = [:]

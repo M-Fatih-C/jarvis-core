@@ -231,9 +231,106 @@ async def run_emulator_tests(require_emulator: bool = False) -> None:
     assert completed_cmd.status == CommandStatus.COMPLETED
     print("  -> PASS: Command marked COMPLETED with result payload.")
 
+    # 7. Live Firestore Security Rules validation
+    print("\n[7] Testing Firestore Security Rules (User Isolation & Field Protection)...")
+    import base64
+    import urllib.request
+    import urllib.error
+
+    def make_token(uid: str) -> str:
+        h = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip('=')
+        p = base64.urlsafe_b64encode(json.dumps({'sub': uid, 'user_id': uid, 'aud': settings.firebase_project_id}).encode()).decode().rstrip('=')
+        return f"{h}.{p}."
+
+    base_rest_url = f"http://{emulator_host}/v1/projects/{settings.firebase_project_id}/databases/(default)/documents"
+    alice_uid = "user_alice_test"
+    bob_uid = "user_bob_test"
+    alice_token = make_token(alice_uid)
+    bob_token = make_token(bob_uid)
+
+    def do_request(url: str, method: str, token: str | None = None, payload: dict | None = None) -> int:
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status
+        except urllib.error.HTTPError as err:
+            return err.code
+
+    # 7a. Alice creates a valid pending command
+    cmd_url = f"{base_rest_url}/users/{alice_uid}/commands/cmd_rules_test_1"
+    valid_payload = {
+        "fields": {
+            "status": {"stringValue": "PENDING"},
+            "user_id": {"stringValue": alice_uid},
+            "name": {"stringValue": "test_cmd"},
+        }
+    }
+    status_create = do_request(cmd_url, "PATCH", token=alice_token, payload=valid_payload)
+    assert status_create == 200, f"Expected 200 for valid create, got {status_create}"
+    print("  -> PASS: User Alice can create valid PENDING command.")
+
+    # 7b. Bob attempts to read Alice's command (User Isolation)
+    status_bob_read = do_request(cmd_url, "GET", token=bob_token)
+    assert status_bob_read == 403, f"Expected 403 for cross-user read, got {status_bob_read}"
+    print("  -> PASS: User Bob denied reading Alice's documents (HTTP 403 User Isolation).")
+
+    # 7c. Bob attempts to write to Alice's path
+    status_bob_write = do_request(f"{base_rest_url}/users/{alice_uid}/commands/cmd_bob_hack", "PATCH", token=bob_token, payload=valid_payload)
+    assert status_bob_write == 403, f"Expected 403 for cross-user write, got {status_bob_write}"
+    print("  -> PASS: User Bob denied writing to Alice's path (HTTP 403 User Isolation).")
+
+    # 7d. Unauthenticated user denied
+    status_unauth = do_request(cmd_url, "GET", token=None)
+    assert status_unauth == 403, f"Expected 403 for unauthenticated request, got {status_unauth}"
+    print("  -> PASS: Unauthenticated access denied (HTTP 403).")
+
+    # 7e. Alice cannot create command with worker-owned fields
+    forbidden_fields = ["lease_owner", "leased_until", "lease_expires_at", "result", "error", "worker_id"]
+    for forbidden_field in forbidden_fields:
+        bad_payload = {
+            "fields": {
+                "status": {"stringValue": "PENDING"},
+                "user_id": {"stringValue": alice_uid},
+                forbidden_field: {"stringValue": "tampered_value"},
+            }
+        }
+        status_bad = do_request(f"{base_rest_url}/users/{alice_uid}/commands/cmd_exploit_{forbidden_field}", "PATCH", token=alice_token, payload=bad_payload)
+        assert status_bad == 403, f"Expected 403 for worker-owned field '{forbidden_field}', got {status_bad}"
+    print("  -> PASS: Client forbidden from creating commands with worker-owned fields (lease_owner, result, etc.).")
+
+    # 7f. Alice cannot update command status to COMPLETED or RUNNING directly
+    bad_update = {
+        "fields": {
+            "status": {"stringValue": "COMPLETED"},
+            "result": {"stringValue": "fake_success"},
+        }
+    }
+    status_bad_update = do_request(cmd_url, "PATCH", token=alice_token, payload=bad_update)
+    assert status_bad_update == 403, f"Expected 403 for modifying status to COMPLETED, got {status_bad_update}"
+    print("  -> PASS: Client forbidden from directly modifying execution status to COMPLETED (HTTP 403).")
+
+    # 7g. Alice can cancel her own pending command
+    cancel_payload = {
+        "fields": {
+            "status": {"stringValue": "CANCELLED"},
+        }
+    }
+    status_cancel = do_request(cmd_url, "PATCH", token=alice_token, payload=cancel_payload)
+    assert status_cancel == 200, f"Expected 200 for user cancelling own pending command, got {status_cancel}"
+    print("  -> PASS: Client allowed to cancel own PENDING command.")
+
+    # 7h. Deletion is forbidden
+    status_del = do_request(cmd_url, "DELETE", token=alice_token)
+    assert status_del == 403, f"Expected 403 for command deletion, got {status_del}"
+    print("  -> PASS: Command deletion strictly forbidden by security rules (HTTP 403).")
+
     await client_provider.close()
     print("\n" + "=" * 70)
-    print("ALL FIREBASE EMULATOR TESTS PASSED!")
+    print("ALL FIREBASE EMULATOR & SECURITY RULE TESTS PASSED!")
     print("=" * 70)
 
 

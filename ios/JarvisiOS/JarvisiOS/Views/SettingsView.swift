@@ -57,7 +57,7 @@ public struct SettingsView: View {
                         HStack {
                             Text("Uygulama Sürümü")
                             Spacer()
-                            Text("Jarvis iOS 1.1 (Milestone 5.1)")
+                            Text("Jarvis iOS 1.2 (Milestone 5.2)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -92,6 +92,10 @@ public struct SettingsView: View {
                         SecureField("Parola", text: $passwordInput)
 
                         TextField("Firebase Proje ID", text: $viewModel.projectId)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+
+                        SecureField("Firebase API Anahtarı (Opsiyonel)", text: $viewModel.apiKey)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
 

@@ -179,7 +179,6 @@
 				TargetAttributes = {
 					6001 = {
 						CreatedOnToolsVersion = 16.0;
-						DevelopmentTeam = T92VJM9C5B;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -371,7 +370,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = T92VJM9C5B;
+				DEVELOPMENT_TEAM = 2M7Q546465;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = JarvisiOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -385,7 +384,7 @@
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -395,7 +394,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = T92VJM9C5B;
+				DEVELOPMENT_TEAM = 2M7Q546465;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = JarvisiOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -409,7 +408,7 @@
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};

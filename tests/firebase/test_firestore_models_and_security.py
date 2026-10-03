@@ -219,10 +219,11 @@ async def test_tampered_action_digest_rejected_by_command_worker() -> None:
     )
     mock_runtime._tools.get.return_value = mock_tool
 
-    # Create server approval for "Original Meeting"
+    # Create and genuinely approve server approval for "Original Meeting"
     run_id = uuid4()
     original_call = ToolCall(id="call_123", name="calendar.create_event", arguments={"title": "Original Meeting"})
     app_req = approval_store.create(agent_run_id=run_id, tool_call=original_call)
+    approval_store.approve(app_req.id, current_tool_call=original_call)
 
     repo = InMemoryCommandRepository()
     worker = CommandWorker(command_repo=repo, runtime=mock_runtime)
@@ -337,6 +338,8 @@ async def test_consumed_approval_cannot_be_reused() -> None:
     run_id = uuid4()
     call = ToolCall(id="c1", name="calendar.create_event", arguments={"title": "Once"})
     app_req = approval_store.create(agent_run_id=run_id, tool_call=call)
+    # Genuinely approve on Mac side first (must not be auto-promoted by tool_execution)
+    approval_store.approve(app_req.id, current_tool_call=call)
 
     repo = InMemoryCommandRepository()
     worker = CommandWorker(command_repo=repo, runtime=mock_runtime, tool_executor=mock_executor)
@@ -381,6 +384,241 @@ async def test_consumed_approval_cannot_be_reused() -> None:
     res2 = await worker.poll_once()
     assert res2.status == CommandStatus.FAILED
     assert "ApprovalAlreadyConsumed" in res2.error
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_cannot_be_executed_directly_in_tool_execution() -> None:
+    """Security invariant: Worker must never promote a PENDING approval solely because tool_execution references it."""
+    from core.agent.approval_store import ApprovalStore
+    from core.cloud.command_worker import CommandWorker
+    from core.cloud.models import CloudCommand, CommandStatus
+    from core.cloud.repositories import InMemoryCommandRepository
+    from core.models.approval import ApprovalStatus
+    from core.models.tools import RiskLevel, ToolCall, ToolDefinition
+    from unittest.mock import MagicMock
+
+    approval_store = ApprovalStore()
+    mock_runtime = MagicMock()
+    mock_runtime._settings.default_agent_mode = "assist"
+    mock_runtime.approval_store = approval_store
+
+    mock_tool = MagicMock()
+    mock_tool.definition = ToolDefinition(
+        name="calendar.create_event",
+        description="Create event",
+        risk_level=RiskLevel.R2_WRITE,
+        input_schema={},
+        requires_approval=True,
+    )
+    mock_runtime._tools.get.return_value = mock_tool
+
+    run_id = uuid4()
+    call = ToolCall(id="c_pend", name="calendar.create_event", arguments={"title": "Pending Only"})
+    app_req = approval_store.create(agent_run_id=run_id, tool_call=call)
+    assert app_req.status == ApprovalStatus.PENDING
+
+    repo = InMemoryCommandRepository()
+    worker = CommandWorker(command_repo=repo, runtime=mock_runtime)
+
+    cmd = CloudCommand(
+        id="cmd_exploit_pending",
+        type="tool_execution",
+        name="calendar.create_event",
+        idempotency_key="idem_pend_1",
+        source_device="iphone_attacker",
+        payload={
+            "approval_id": str(app_req.id),
+            "tool_call_id": "c_pend",
+            "arguments": {"title": "Pending Only"},
+        },
+        status=CommandStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    await repo.create(cmd)
+
+    processed = await worker.poll_once()
+    assert processed is not None
+    assert processed.status == CommandStatus.FAILED
+    assert "ApprovalNotGranted" in processed.error
+    assert "status 'pending', not 'approved'" in processed.error
+    # Store record must remain untouched PENDING
+    assert approval_store.get(app_req.id).status == ApprovalStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_user_cannot_execute_approval() -> None:
+    """Security invariant: Command payload user_id must match jarvis_uid."""
+    from core.agent.approval_store import ApprovalStore
+    from core.cloud.command_worker import CommandWorker
+    from core.cloud.models import CloudCommand, CommandStatus
+    from core.cloud.repositories import InMemoryCommandRepository
+    from core.models.tools import RiskLevel, ToolCall, ToolDefinition
+    from unittest.mock import MagicMock
+
+    approval_store = ApprovalStore()
+    mock_runtime = MagicMock()
+    mock_runtime._settings.default_agent_mode = "assist"
+    mock_runtime._settings.jarvis_uid = "legitimate_owner"
+    mock_runtime.approval_store = approval_store
+
+    mock_tool = MagicMock()
+    mock_tool.definition = ToolDefinition(
+        name="calendar.create_event",
+        description="Create event",
+        risk_level=RiskLevel.R2_WRITE,
+        input_schema={},
+        requires_approval=True,
+    )
+    mock_runtime._tools.get.return_value = mock_tool
+
+    run_id = uuid4()
+    call = ToolCall(id="c_auth", name="calendar.create_event", arguments={"title": "Target"})
+    app_req = approval_store.create(agent_run_id=run_id, tool_call=call)
+    approval_store.approve(app_req.id, current_tool_call=call)
+
+    repo = InMemoryCommandRepository()
+    worker = CommandWorker(command_repo=repo, runtime=mock_runtime)
+
+    cmd = CloudCommand(
+        id="cmd_unauth_user",
+        type="tool_execution",
+        name="calendar.create_event",
+        idempotency_key="idem_auth_1",
+        source_device="iphone_attacker",
+        payload={
+            "approval_id": str(app_req.id),
+            "tool_call_id": "c_auth",
+            "arguments": {"title": "Target"},
+            "user_id": "attacker_intruder",
+        },
+        status=CommandStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    await repo.create(cmd)
+
+    processed = await worker.poll_once()
+    assert processed is not None
+    assert processed.status == CommandStatus.FAILED
+    assert "UnauthorizedUser" in processed.error
+
+
+@pytest.mark.asyncio
+async def test_approval_response_mandates_valid_action_digest_and_prevents_replay() -> None:
+    """Security invariant: approval_response requires mandatory action_digest and rejects replays."""
+    from core.agent.approval_store import ApprovalStore
+    from core.cloud.command_worker import CommandWorker
+    from core.cloud.models import CloudCommand, CommandStatus
+    from core.cloud.repositories import InMemoryCommandRepository
+    from core.models.agent import AgentRun, AgentState
+    from core.models.tools import ToolCall
+    from unittest.mock import AsyncMock, MagicMock
+
+    approval_store = ApprovalStore()
+    mock_runtime = MagicMock()
+    mock_runtime._settings.jarvis_uid = "default_user"
+    mock_runtime.approval_store = approval_store
+
+    run_id = uuid4()
+    call = ToolCall(id="c_resp", name="calendar.create_event", arguments={"title": "Meeting"})
+    app_req = approval_store.create(agent_run_id=run_id, tool_call=call)
+
+    # 1. Missing action_digest must fail
+    repo = InMemoryCommandRepository()
+    worker = CommandWorker(command_repo=repo, runtime=mock_runtime)
+
+    cmd_no_digest = CloudCommand(
+        id="cmd_no_digest",
+        type="approval_response",
+        name="approval_decision",
+        idempotency_key="idem_no_digest",
+        source_device="iphone",
+        payload={
+            "approval_id": str(app_req.id),
+            "decision": "approved",
+            # action_digest intentionally omitted
+        },
+        status=CommandStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    await repo.create(cmd_no_digest)
+    res_no_digest = await worker.poll_once()
+    assert res_no_digest.status == CommandStatus.FAILED
+    assert "MissingActionDigest" in res_no_digest.error
+
+    # 2. Tampered action_digest must fail
+    cmd_bad_digest = CloudCommand(
+        id="cmd_bad_digest",
+        type="approval_response",
+        name="approval_decision",
+        idempotency_key="idem_bad_digest",
+        source_device="iphone",
+        payload={
+            "approval_id": str(app_req.id),
+            "decision": "approved",
+            "action_digest": "deadbeef1234567890",
+        },
+        status=CommandStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    await repo.create(cmd_bad_digest)
+    res_bad_digest = await worker.poll_once()
+    assert res_bad_digest.status == CommandStatus.FAILED
+    assert "ActionDigestMismatch" in res_bad_digest.error
+
+    # 3. Valid approval_response succeeds and completes run
+    mock_runtime.resume_approval = AsyncMock(
+        return_value=AgentRun(
+            id=run_id,
+            user_id="default_user",
+            user_input="Takvime ekle",
+            state=AgentState.COMPLETED,
+            final_response="Etkinlik oluşturuldu.",
+        )
+    )
+    cmd_valid = CloudCommand(
+        id="cmd_valid_approval",
+        type="approval_response",
+        name="approval_decision",
+        idempotency_key="idem_valid",
+        source_device="iphone",
+        payload={
+            "approval_id": str(app_req.id),
+            "decision": "approved",
+            "action_digest": app_req.action_digest,
+        },
+        status=CommandStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    await repo.create(cmd_valid)
+    res_valid = await worker.poll_once()
+    assert res_valid.status == CommandStatus.COMPLETED
+    assert res_valid.result["response"] == "Etkinlik oluşturuldu."
+
+    # 4. Replay attempt of the same approval must fail (already approved/not pending)
+    cmd_replay = CloudCommand(
+        id="cmd_replay_approval",
+        type="approval_response",
+        name="approval_decision",
+        idempotency_key="idem_replay",
+        source_device="iphone",
+        payload={
+            "approval_id": str(app_req.id),
+            "decision": "approved",
+            "action_digest": app_req.action_digest,
+        },
+        status=CommandStatus.QUEUED,
+        created_at=datetime.now(timezone.utc),
+        available_at=datetime.now(timezone.utc),
+    )
+    await repo.create(cmd_replay)
+    res_replay = await worker.poll_once()
+    assert res_replay.status == CommandStatus.FAILED
+    assert "ApprovalInvalidState" in res_replay.error
 
 
 @pytest.mark.asyncio

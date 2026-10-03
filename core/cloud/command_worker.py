@@ -104,6 +104,14 @@ class CommandWorker:
         if approval_req.status == ApprovalStatus.EXPIRED or now > approval_req.expires_at:
             return False, None, f"ApprovalExpired: Approval '{approval_id}' has expired."
 
+        # Security invariant: The worker must NEVER promote a PENDING approval to APPROVED solely because
+        # a tool-execution command references it. Require a genuinely approved, unexpired and unconsumed record.
+        if approval_req.status != ApprovalStatus.APPROVED:
+            return False, None, (
+                f"ApprovalNotGranted: Approval '{approval_id}' is in status '{approval_req.status.value}', not 'approved'. "
+                "The worker must never promote a PENDING approval solely because a tool-execution command references it."
+            )
+
         # Verify One-time Approval Consumption
         if approval_req.consumed_at is not None:
             return False, None, (
@@ -141,16 +149,17 @@ class CommandWorker:
             arguments=cmd_args,
         )
 
-        if approval_req.action_digest and computed_digest != approval_req.action_digest:
+        if not approval_req.action_digest or computed_digest != approval_req.action_digest:
             return False, None, (
                 "ActionDigestMismatch: Arguments were altered after approval was generated! "
                 f"Expected digest '{approval_req.action_digest}', computed '{computed_digest}'."
             )
 
-        # Approve and consume atomically on server
-        if approval_req.status == ApprovalStatus.PENDING:
-            self._runtime.approval_store.approve(approval_id, current_tool_call=approval_req.tool_call)
-        self._runtime.approval_store.consume(approval_id, approval_req.tool_call)
+        # Consume approval atomically before execution
+        try:
+            self._runtime.approval_store.consume(approval_id, approval_req.tool_call)
+        except Exception as exc:
+            return False, None, f"ApprovalConsumptionFailed: {exc}"
 
         logger.info(
             "cloud_command_approval_verified",
@@ -159,13 +168,17 @@ class CommandWorker:
             action_digest=computed_digest,
         )
 
-        # Execute verified tool
-        tool_res = await self._executor.execute_tool_call(
-            approval_req.tool_call,
-            agent_mode=agent_mode,
-            is_approved=True,
-        )
-        return tool_res.success, tool_res.data, tool_res.error
+        # Execute verified tool with safe recovery for interruptions
+        try:
+            tool_res = await self._executor.execute_tool_call(
+                approval_req.tool_call,
+                agent_mode=agent_mode,
+                is_approved=True,
+            )
+            return tool_res.success, tool_res.data, tool_res.error
+        except Exception as exc:
+            logger.error("tool_execution_interrupted", approval_id=str(approval_id), error=str(exc))
+            return False, None, f"ExecutionInterrupted: Tool execution failed or was interrupted: {exc}"
 
     async def poll_once(self) -> CloudCommand | None:
         """Poll and execute the next available leased command."""
@@ -248,46 +261,73 @@ class CommandWorker:
                         updated_cmd = await self._repo.update(cmd)
                         return updated_cmd
 
-                    if decision == "approved":
-                        # Verify client action_digest against server-side approval request
-                        client_digest = cmd.payload.get("action_digest")
-                        server_req = self._runtime.approval_store.get(approval_id)
+                    server_req = self._runtime.approval_store.get(approval_id)
+                    now = datetime.now(timezone.utc)
 
-                        if not server_req:
-                            cmd.status = CommandStatus.FAILED
-                            cmd.error = f"ApprovalNotFound: No approval record found for ID '{approval_id}'"
-                        elif client_digest and server_req.action_digest and client_digest != server_req.action_digest:
-                            cmd.status = CommandStatus.FAILED
-                            cmd.error = "ActionDigestMismatch: Client action digest does not match server approval."
-                        else:
-                            completed_run = await self._runtime.resume_approval(approval_id)
-                            if completed_run.state == AgentState.COMPLETED:
-                                cmd.status = CommandStatus.COMPLETED
-                                cmd.result = {
-                                    "response": completed_run.final_response,
-                                    "run_id": str(completed_run.id),
-                                }
-                            elif completed_run.state == AgentState.WAITING_APPROVAL:
-                                cmd.status = CommandStatus.WAITING_APPROVAL
-                                cmd.result = {
-                                    "approval_id": str(completed_run.pending_approval_id),
-                                    "pending_tool": completed_run.pending_tool_call.name if completed_run.pending_tool_call else None,
-                                    "arguments": completed_run.pending_tool_call.arguments if completed_run.pending_tool_call else {},
-                                }
-                            else:
-                                cmd.status = CommandStatus.FAILED
-                                cmd.error = completed_run.error or "Run did not complete"
-                    elif decision in ("rejected", "dismissed"):
-                        reason = cmd.payload.get("reason", "İşlem iPhone üzerinden reddedildi.")
-                        rejected_run = await self._runtime.resume_rejection(approval_id, reason=reason)
-                        cmd.status = CommandStatus.COMPLETED
-                        cmd.result = {
-                            "response": rejected_run.final_response,
-                            "status": "rejected",
-                        }
-                    else:
+                    if not server_req:
                         cmd.status = CommandStatus.FAILED
-                        cmd.error = f"Unsupported approval decision '{decision}'"
+                        cmd.error = f"ApprovalNotFound: No approval record found for ID '{approval_id}'"
+                    elif server_req.consumed_at is not None:
+                        cmd.status = CommandStatus.FAILED
+                        cmd.error = f"ApprovalAlreadyConsumed: Approval '{approval_id}' was already consumed at {server_req.consumed_at.isoformat()}"
+                    elif server_req.status != ApprovalStatus.PENDING:
+                        cmd.status = CommandStatus.FAILED
+                        cmd.error = f"ApprovalInvalidState: Approval '{approval_id}' is already {server_req.status.value}"
+                    elif server_req.status == ApprovalStatus.EXPIRED or now > server_req.expires_at:
+                        cmd.status = CommandStatus.FAILED
+                        cmd.error = f"ApprovalExpired: Approval '{approval_id}' has expired."
+                    else:
+                        # Verify User Authorization
+                        cmd_user = cmd.payload.get("user_id") or getattr(cmd, "user_id", None)
+                        if cmd_user and cmd_user != self._settings.jarvis_uid:
+                            cmd.status = CommandStatus.FAILED
+                            cmd.error = f"UnauthorizedUser: Requesting user '{cmd_user}' does not match authorized owner."
+                        elif decision == "approved":
+                            # Action digest is mandatory for approval_response
+                            client_digest = cmd.payload.get("action_digest")
+                            if not client_digest:
+                                cmd.status = CommandStatus.FAILED
+                                cmd.error = "MissingActionDigest: action_digest is mandatory for approval_response"
+                            elif server_req.action_digest and client_digest != server_req.action_digest:
+                                cmd.status = CommandStatus.FAILED
+                                cmd.error = f"ActionDigestMismatch: Client action digest does not match server approval."
+                            else:
+                                self._runtime.approval_store.approve(approval_id, current_tool_call=server_req.tool_call)
+                                completed_run = await self._runtime.resume_approval(approval_id)
+                                if completed_run.state == AgentState.COMPLETED:
+                                    cmd.status = CommandStatus.COMPLETED
+                                    cmd.result = {
+                                        "response": completed_run.final_response,
+                                        "run_id": str(completed_run.id),
+                                    }
+                                elif completed_run.state == AgentState.WAITING_APPROVAL:
+                                    cmd.status = CommandStatus.WAITING_APPROVAL
+                                    pending_req = (
+                                        self._runtime.approval_store.get(completed_run.pending_approval_id)
+                                        if completed_run.pending_approval_id
+                                        else None
+                                    )
+                                    cmd.result = {
+                                        "approval_id": str(completed_run.pending_approval_id),
+                                        "pending_tool": completed_run.pending_tool_call.name if completed_run.pending_tool_call else None,
+                                        "arguments": completed_run.pending_tool_call.arguments if completed_run.pending_tool_call else {},
+                                        "action_digest": pending_req.action_digest if pending_req else None,
+                                    }
+                                else:
+                                    cmd.status = CommandStatus.FAILED
+                                    cmd.error = completed_run.error or "Run did not complete"
+                        elif decision in ("rejected", "dismissed"):
+                            reason = cmd.payload.get("reason", "İşlem iPhone üzerinden reddedildi.")
+                            self._runtime.approval_store.reject(approval_id)
+                            rejected_run = await self._runtime.resume_rejection(approval_id, reason=reason)
+                            cmd.status = CommandStatus.COMPLETED
+                            cmd.result = {
+                                "response": rejected_run.final_response,
+                                "status": "rejected",
+                            }
+                        else:
+                            cmd.status = CommandStatus.FAILED
+                            cmd.error = f"Unsupported approval decision '{decision}'"
 
             elif cmd.type == "task_proposal_approval":
                 # M4.2 TaskProposal execution and read-back verification
