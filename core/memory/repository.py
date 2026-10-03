@@ -59,6 +59,10 @@ class MemoryRepository(ABC):
         """Lookup an existing record by its normalized SHA-256 fingerprint."""
         pass
 
+    async def find_by_source_id(self, source_id: str) -> MemoryRecord | None:
+        """Lookup an existing record by its external source ID (e.g. seed id)."""
+        return None
+
     @abstractmethod
     async def semantic_search(
         self,

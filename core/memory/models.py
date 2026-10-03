@@ -50,6 +50,16 @@ class MemoryStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class VerificationStatus(str, Enum):
+    """Verification and lifecycle trust status of a personal memory item."""
+    VERIFIED = "verified"
+    USER_REPORTED = "user_reported"
+    HISTORICAL = "historical"
+    REQUIRES_VERIFICATION = "requires_verification"
+    CONFLICT = "conflict"
+    EXPIRED = "expired"
+
+
 class FeedbackType(str, Enum):
     """Type of user feedback for personalization."""
     ACCEPTED = "accepted"
@@ -65,6 +75,8 @@ class MemoryRecord(BaseModel):
     model_config = ConfigDict(frozen=False)
 
     id: UUID = Field(default_factory=uuid4)
+    source_id: str | None = None          # Seed / external origin ID (e.g. 'identity.name')
+    category: str | None = None           # Functional category (e.g. 'education', 'financial_historical')
     kind: MemoryKind
     sensitivity: MemorySensitivity
     content: str | None = None
@@ -73,8 +85,12 @@ class MemoryRecord(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source_type: MemorySourceType = MemorySourceType.EXPLICIT_USER
     source_ref: str | None = None
+    as_of: str | None = None              # Point-in-time date or period (e.g. '2026-10-03')
+    valid_from: datetime | None = None
+    valid_until: datetime | None = None
     confidence: float = 1.0
     importance: float = 0.5
+    verification_status: VerificationStatus = VerificationStatus.USER_REPORTED
     subject: str | None = None
     predicate: str | None = None
     value: Any | None = None
@@ -82,6 +98,7 @@ class MemoryRecord(BaseModel):
     status: MemoryStatus = MemoryStatus.ACTIVE
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    imported_at: datetime | None = None
     last_accessed_at: datetime | None = None
     expires_at: datetime | None = None
     embedding: list[float] | None = None
@@ -101,10 +118,15 @@ class MemoryCandidate(BaseModel):
     subject: str | None = None
     predicate: str | None = None
     value: Any | None = None
+    source_id: str | None = None
+    category: str | None = None
+    as_of: str | None = None
+    verification_status: VerificationStatus = VerificationStatus.USER_REPORTED
     sensitivity: MemorySensitivity = MemorySensitivity.NORMAL
     confidence: float = 0.9
     importance: float = 0.5
     source_type: MemorySourceType = MemorySourceType.EXPLICIT_USER
+    source_ref: str | None = None
     durable: bool = True
     training_eligible: bool = False
 
@@ -116,6 +138,9 @@ class MemoryFilters(BaseModel):
     status: MemoryStatus | None = MemoryStatus.ACTIVE
     subject: str | None = None
     predicate: str | None = None
+    source_id: str | None = None
+    category: str | None = None
+    verification_status: VerificationStatus | None = None
     tags: list[str] | None = None
     limit: int = 10
 

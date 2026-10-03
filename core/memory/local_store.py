@@ -62,11 +62,13 @@ class SQLiteMemoryRepository(MemoryRepository):
         return self._conn
 
     def _init_db(self) -> None:
-        """Create table and indexes if they do not exist."""
+        """Create table and indexes if they do not exist, and migrate missing columns."""
         with self._conn:
             self._conn.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
+                source_id TEXT,
+                category TEXT,
                 kind TEXT NOT NULL,
                 sensitivity TEXT NOT NULL,
                 content TEXT,
@@ -75,8 +77,12 @@ class SQLiteMemoryRepository(MemoryRepository):
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 source_type TEXT NOT NULL,
                 source_ref TEXT,
+                as_of TEXT,
+                valid_from TEXT,
+                valid_until TEXT,
                 confidence REAL NOT NULL,
                 importance REAL NOT NULL,
+                verification_status TEXT NOT NULL DEFAULT 'user_reported',
                 subject TEXT,
                 predicate TEXT,
                 value_json TEXT,
@@ -84,6 +90,7 @@ class SQLiteMemoryRepository(MemoryRepository):
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                imported_at TEXT,
                 last_accessed_at TEXT,
                 expires_at TEXT,
                 embedding_json TEXT,
@@ -95,8 +102,28 @@ class SQLiteMemoryRepository(MemoryRepository):
                 deleted_at TEXT
             );
             """)
+
+            # Safe migration for existing databases
+            existing_cols = {col[1] for col in self._conn.execute("PRAGMA table_info(memories);").fetchall()}
+            if "source_id" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN source_id TEXT;")
+            if "category" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN category TEXT;")
+            if "as_of" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN as_of TEXT;")
+            if "valid_from" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN valid_from TEXT;")
+            if "valid_until" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN valid_until TEXT;")
+            if "verification_status" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'user_reported';")
+            if "imported_at" not in existing_cols:
+                self._conn.execute("ALTER TABLE memories ADD COLUMN imported_at TEXT;")
+
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_status_kind ON memories (status, kind);")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_fingerprint ON memories (fingerprint);")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_source_id ON memories (source_id);")
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_category ON memories (category);")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_subject_predicate ON memories (subject, predicate);")
             self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories (updated_at);")
 
@@ -127,6 +154,24 @@ class SQLiteMemoryRepository(MemoryRepository):
             if deleted_at.tzinfo is None:
                 deleted_at = deleted_at.replace(tzinfo=timezone.utc)
 
+        valid_from = None
+        if "valid_from" in row.keys() and row["valid_from"]:
+            valid_from = datetime.fromisoformat(row["valid_from"])
+            if valid_from.tzinfo is None:
+                valid_from = valid_from.replace(tzinfo=timezone.utc)
+
+        valid_until = None
+        if "valid_until" in row.keys() and row["valid_until"]:
+            valid_until = datetime.fromisoformat(row["valid_until"])
+            if valid_until.tzinfo is None:
+                valid_until = valid_until.replace(tzinfo=timezone.utc)
+
+        imported_at = None
+        if "imported_at" in row.keys() and row["imported_at"]:
+            imported_at = datetime.fromisoformat(row["imported_at"])
+            if imported_at.tzinfo is None:
+                imported_at = imported_at.replace(tzinfo=timezone.utc)
+
         embedding = None
         if row["embedding_json"]:
             try:
@@ -141,8 +186,17 @@ class SQLiteMemoryRepository(MemoryRepository):
             except Exception:
                 value = row["value_json"]
 
+        from core.memory.models import VerificationStatus
+        v_status_str = row["verification_status"] if "verification_status" in row.keys() and row["verification_status"] else "user_reported"
+        try:
+            verif_status = VerificationStatus(v_status_str)
+        except Exception:
+            verif_status = VerificationStatus.USER_REPORTED
+
         return MemoryRecord(
             id=UUID(row["id"]),
+            source_id=row["source_id"] if "source_id" in row.keys() else None,
+            category=row["category"] if "category" in row.keys() else None,
             kind=MemoryKind(row["kind"]),
             sensitivity=MemorySensitivity(row["sensitivity"]),
             content=row["content"],
@@ -151,8 +205,12 @@ class SQLiteMemoryRepository(MemoryRepository):
             tags=json.loads(row["tags_json"]) if row["tags_json"] else [],
             source_type=MemorySourceType(row["source_type"]),
             source_ref=row["source_ref"],
+            as_of=row["as_of"] if "as_of" in row.keys() else None,
+            valid_from=valid_from,
+            valid_until=valid_until,
             confidence=float(row["confidence"]),
             importance=float(row["importance"]),
+            verification_status=verif_status,
             subject=row["subject"],
             predicate=row["predicate"],
             value=value,
@@ -160,6 +218,7 @@ class SQLiteMemoryRepository(MemoryRepository):
             status=MemoryStatus(row["status"]),
             created_at=created_at,
             updated_at=updated_at,
+            imported_at=imported_at,
             last_accessed_at=last_accessed,
             expires_at=expires_at,
             embedding=embedding,
@@ -182,18 +241,19 @@ class SQLiteMemoryRepository(MemoryRepository):
             with self._conn:
                 self._conn.execute("""
                 INSERT INTO memories (
-                    id, kind, sensitivity, content, encrypted_content,
-                    structured_json, tags_json, source_type, source_ref,
-                    confidence, importance, subject, predicate, value_json,
-                    fingerprint, status, created_at, updated_at,
-                    last_accessed_at, expires_at, embedding_json,
-                    embedding_model, revision, supersedes,
-                    training_eligible, schema_version, deleted_at
+                    id, source_id, category, kind, sensitivity, content, encrypted_content,
+                    structured_json, tags_json, source_type, source_ref, as_of, valid_from,
+                    valid_until, confidence, importance, verification_status, subject, predicate,
+                    value_json, fingerprint, status, created_at, updated_at, imported_at,
+                    last_accessed_at, expires_at, embedding_json, embedding_model, revision,
+                    supersedes, training_eligible, schema_version, deleted_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """, (
                     str(memory.id),
+                    memory.source_id,
+                    memory.category,
                     memory.kind.value,
                     memory.sensitivity.value,
                     memory.content,
@@ -202,8 +262,12 @@ class SQLiteMemoryRepository(MemoryRepository):
                     json.dumps(memory.tags, ensure_ascii=False),
                     memory.source_type.value,
                     memory.source_ref,
+                    memory.as_of,
+                    memory.valid_from.isoformat() if memory.valid_from else None,
+                    memory.valid_until.isoformat() if memory.valid_until else None,
                     memory.confidence,
                     memory.importance,
+                    memory.verification_status.value,
                     memory.subject,
                     memory.predicate,
                     json.dumps(memory.value, ensure_ascii=False) if memory.value is not None else None,
@@ -211,6 +275,7 @@ class SQLiteMemoryRepository(MemoryRepository):
                     memory.status.value,
                     memory.created_at.isoformat(),
                     memory.updated_at.isoformat(),
+                    memory.imported_at.isoformat() if memory.imported_at else None,
                     memory.last_accessed_at.isoformat() if memory.last_accessed_at else None,
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(memory.embedding) if memory.embedding is not None else None,
@@ -244,15 +309,18 @@ class SQLiteMemoryRepository(MemoryRepository):
             with self._conn:
                 self._conn.execute("""
                 UPDATE memories SET
-                    kind = ?, sensitivity = ?, content = ?, encrypted_content = ?,
-                    structured_json = ?, tags_json = ?, source_type = ?, source_ref = ?,
-                    confidence = ?, importance = ?, subject = ?, predicate = ?, value_json = ?,
-                    fingerprint = ?, status = ?, updated_at = ?, last_accessed_at = ?,
-                    expires_at = ?, embedding_json = ?, embedding_model = ?,
-                    revision = ?, supersedes = ?, training_eligible = ?,
-                    schema_version = ?, deleted_at = ?
+                    source_id = ?, category = ?, kind = ?, sensitivity = ?, content = ?,
+                    encrypted_content = ?, structured_json = ?, tags_json = ?, source_type = ?,
+                    source_ref = ?, as_of = ?, valid_from = ?, valid_until = ?, confidence = ?,
+                    importance = ?, verification_status = ?, subject = ?, predicate = ?,
+                    value_json = ?, fingerprint = ?, status = ?, updated_at = ?, imported_at = ?,
+                    last_accessed_at = ?, expires_at = ?, embedding_json = ?, embedding_model = ?,
+                    revision = ?, supersedes = ?, training_eligible = ?, schema_version = ?,
+                    deleted_at = ?
                 WHERE id = ?
                 """, (
+                    memory.source_id,
+                    memory.category,
                     memory.kind.value,
                     memory.sensitivity.value,
                     memory.content,
@@ -261,14 +329,19 @@ class SQLiteMemoryRepository(MemoryRepository):
                     json.dumps(memory.tags, ensure_ascii=False),
                     memory.source_type.value,
                     memory.source_ref,
+                    memory.as_of,
+                    memory.valid_from.isoformat() if memory.valid_from else None,
+                    memory.valid_until.isoformat() if memory.valid_until else None,
                     memory.confidence,
                     memory.importance,
+                    memory.verification_status.value,
                     memory.subject,
                     memory.predicate,
                     json.dumps(memory.value, ensure_ascii=False) if memory.value is not None else None,
                     memory.fingerprint,
                     memory.status.value,
                     memory.updated_at.isoformat(),
+                    memory.imported_at.isoformat() if memory.imported_at else None,
                     memory.last_accessed_at.isoformat() if memory.last_accessed_at else None,
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(memory.embedding) if memory.embedding is not None else None,
@@ -315,6 +388,15 @@ class SQLiteMemoryRepository(MemoryRepository):
                 if filters.sensitivity is not None:
                     query += " AND sensitivity = ?"
                     params.append(filters.sensitivity.value)
+                if filters.source_id is not None:
+                    query += " AND source_id = ?"
+                    params.append(filters.source_id)
+                if filters.category is not None:
+                    query += " AND category = ?"
+                    params.append(filters.category)
+                if filters.verification_status is not None:
+                    query += " AND verification_status = ?"
+                    params.append(filters.verification_status.value)
                 if filters.subject is not None:
                     query += " AND LOWER(subject) = LOWER(?)"
                     params.append(filters.subject)
@@ -338,6 +420,56 @@ class SQLiteMemoryRepository(MemoryRepository):
             )
             row = cursor.fetchone()
             return self._row_to_record(row) if row else None
+
+    async def find_by_source_id(self, source_id: str) -> MemoryRecord | None:
+        async with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM memories WHERE source_id = ? AND status != ? ORDER BY updated_at DESC LIMIT 1",
+                (source_id, MemoryStatus.DELETED.value),
+            )
+            row = cursor.fetchone()
+            return self._row_to_record(row) if row else None
+
+    async def audit_plaintext_private_records(self) -> list[dict[str, Any]]:
+        """Audit the database for any PRIVATE records that leak plaintext content or structured data.
+        
+        Returns metadata summaries without displaying sensitive payload contents.
+        """
+        async with self._lock:
+            cursor = self._conn.execute("""
+            SELECT id, kind, source_id, category,
+                   (content IS NOT NULL AND content != '') AS has_content,
+                   (structured_json IS NOT NULL AND structured_json != '{}' AND structured_json != '') AS has_structured,
+                   (value_json IS NOT NULL AND value_json != '') AS has_value,
+                   (embedding_json IS NOT NULL AND embedding_json != '') AS has_embedding
+            FROM memories
+            WHERE sensitivity = 'private'
+              AND (
+                  (content IS NOT NULL AND content != '')
+                  OR (structured_json IS NOT NULL AND structured_json != '{}' AND structured_json != '')
+                  OR (value_json IS NOT NULL AND value_json != '')
+                  OR (embedding_json IS NOT NULL AND embedding_json != '')
+              )
+            """)
+            leaks = []
+            for r in cursor.fetchall():
+                leaked_fields = []
+                if r["has_content"]:
+                    leaked_fields.append("content")
+                if r["has_structured"]:
+                    leaked_fields.append("structured_json")
+                if r["has_value"]:
+                    leaked_fields.append("value_json")
+                if r["has_embedding"]:
+                    leaked_fields.append("embedding_json")
+                leaks.append({
+                    "id": r["id"],
+                    "kind": r["kind"],
+                    "source_id": r["source_id"],
+                    "category": r["category"],
+                    "leaked_fields": leaked_fields,
+                })
+            return leaks
 
     async def semantic_search(
         self,

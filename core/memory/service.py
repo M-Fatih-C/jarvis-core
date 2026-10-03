@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from uuid import UUID
+import sys
+from uuid import UUID, uuid4
 from core.config.settings import Settings, get_settings
 from core.llm.base import LLMAdapter
 from core.logging.setup import get_logger
-from core.memory.crypto import InMemoryKeyProvider, KeyProvider, MemoryEncryptor
+from core.memory.crypto import InMemoryKeyProvider, KeyProvider, MacKeychainKeyProvider, MemoryEncryptor
 from core.memory.deduplication import DeduplicationEngine
 from core.memory.embeddings.base import EmbeddingProvider
 from core.memory.embeddings import get_embedding_provider
@@ -49,7 +50,16 @@ class MemoryService:
             provider_type=self._settings.embedding_provider,
             model_name=self._settings.embedding_model,
         )
-        self._key_provider = key_provider or InMemoryKeyProvider()
+        if key_provider is not None:
+            self._key_provider = key_provider
+        elif sys.platform == "darwin":
+            self._key_provider = MacKeychainKeyProvider(
+                service_name="com.jarvis.memory",
+                fallback_to_memory=False,
+            )
+        else:
+            self._key_provider = InMemoryKeyProvider()
+
         self._policy = policy or MemoryPolicy()
         self._extractor = extractor or MemoryExtractor()
         self._ranker = MemoryRanker(settings=self._settings)
@@ -81,21 +91,10 @@ class MemoryService:
             logger.info("memory_candidate_rejected_by_policy", reason=decision.reason)
             return None
 
-        # 2. Fingerprint & Deduplication
-        fingerprint = DeduplicationEngine.generate_fingerprint(
-            kind=candidate.kind.value,
-            content=decision.cleaned_content,
-            subject=candidate.subject,
-            predicate=candidate.predicate,
-            structured=decision.cleaned_structured,
-        )
+        rec_id = uuid4()
+        schema_ver = 1
 
-        existing = await self._repo.find_by_fingerprint(fingerprint)
-        if existing and existing.status == MemoryStatus.ACTIVE:
-            logger.info("memory_duplicate_found", memory_id=str(existing.id))
-            return existing
-
-        # 3. Contradiction Resolution
+        # 2. Contradiction Resolution
         active_records = await self._repo.list(filters=MemoryFilters(status=MemoryStatus.ACTIVE))
         contradictions = DeduplicationEngine.find_contradictions(candidate, active_records)
 
@@ -111,49 +110,106 @@ class MemoryService:
             await self._repo.update(old_rec)
             superseded_id = old_rec.id
 
-        # 4. Encryption & Sensitivity Handling
+        # 3. Encryption, Sensitivity Handling & Zero-Leakage Storage
         content_to_store: str | None = decision.cleaned_content
         encrypted_content: str | None = None
+        structured_to_store: dict[str, Any] = decision.cleaned_structured
+        subject_to_store: str | None = candidate.subject
+        predicate_to_store: str | None = candidate.predicate
+        value_to_store: Any | None = candidate.value
         embedding: list[float] | None = None
         embedding_model_name: str | None = None
 
         if decision.final_sensitivity == MemorySensitivity.PRIVATE:
-            # Client-side AES-256-GCM encryption
+            # Client-side AES-256-GCM encryption with cryptographic AAD binding
             key = await self._key_provider.get_or_create_memory_key()
-            enc_dict = MemoryEncryptor.encrypt(decision.cleaned_content, key)
+            private_payload = {
+                "content": decision.cleaned_content,
+                "structured": decision.cleaned_structured,
+                "subject": candidate.subject,
+                "predicate": candidate.predicate,
+                "value": candidate.value,
+            }
+            enc_dict = MemoryEncryptor.encrypt_private_payload(
+                private_payload, key, record_id=rec_id, schema_version=schema_ver
+            )
             encrypted_content = json.dumps(enc_dict)
-            # Generate local-only embedding for local semantic retrieval
-            embedding = await self._embeddings.embed_document(decision.cleaned_content)
-            embedding_model_name = self._settings.embedding_model
+
+            # Purge plaintext copies from stored fields
+            content_to_store = None
+            structured_to_store = {}
+            subject_to_store = "private_vault"
+            predicate_to_store = "encrypted"
+            value_to_store = None
+            embedding = None
+            embedding_model_name = None
+
+            # Generate HMAC-SHA256 fingerprint using derived salt key to avoid plaintext leaks
+            hmac_key = MemoryEncryptor.derive_fingerprint_key(key)
+            fingerprint = DeduplicationEngine.generate_fingerprint(
+                kind=candidate.kind.value,
+                content=decision.cleaned_content,
+                subject=candidate.subject,
+                predicate=candidate.predicate,
+                structured=decision.cleaned_structured,
+                hmac_key=hmac_key,
+            )
 
         elif decision.final_sensitivity == MemorySensitivity.SECRET_REFERENCE:
             # Never embed secrets or secret references
             embedding = None
+            fingerprint = DeduplicationEngine.generate_fingerprint(
+                kind=candidate.kind.value,
+                content=decision.cleaned_content,
+                subject=candidate.subject,
+                predicate=candidate.predicate,
+                structured=decision.cleaned_structured,
+            )
 
         else:
             # NORMAL or LOCAL_ONLY
             embedding = await self._embeddings.embed_document(decision.cleaned_content)
             embedding_model_name = self._settings.embedding_model
+            fingerprint = DeduplicationEngine.generate_fingerprint(
+                kind=candidate.kind.value,
+                content=decision.cleaned_content,
+                subject=candidate.subject,
+                predicate=candidate.predicate,
+                structured=decision.cleaned_structured,
+            )
+
+        # 4. Deduplication Check
+        existing = await self._repo.find_by_fingerprint(fingerprint)
+        if existing and existing.status == MemoryStatus.ACTIVE:
+            logger.info("memory_duplicate_found", memory_id=str(existing.id))
+            return existing
 
         # 5. Build and save persistent record
         record = MemoryRecord(
+            id=rec_id,
+            source_id=candidate.source_id,
+            category=candidate.category or "general",
             kind=candidate.kind,
             sensitivity=decision.final_sensitivity,
             content=content_to_store,
             encrypted_content=encrypted_content,
-            structured=decision.cleaned_structured,
+            structured=structured_to_store,
             source_type=candidate.source_type,
+            source_ref=candidate.source_ref,
+            as_of=candidate.as_of,
             confidence=candidate.confidence,
             importance=candidate.importance,
-            subject=candidate.subject,
-            predicate=candidate.predicate,
-            value=candidate.value,
+            verification_status=candidate.verification_status,
+            subject=subject_to_store,
+            predicate=predicate_to_store,
+            value=value_to_store,
             fingerprint=fingerprint,
             status=decision.initial_status,
             embedding=embedding,
             embedding_model=embedding_model_name,
             supersedes=superseded_id,
-            training_eligible=decision.training_eligible,
+            training_eligible=decision.training_eligible if decision.final_sensitivity != MemorySensitivity.PRIVATE else False,
+            schema_version=schema_ver,
         )
 
         saved = await self._repo.save(record)

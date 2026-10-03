@@ -48,3 +48,12 @@ xcuserdata/
 *.mobileprovision
 *.p12
 *.cer
+
+# Personal Profile & Sensitive Seed Files (Milestone 5.2.1)
+jarvis_profile_seed*.json
+jarvis_sensitive_opt_in*.json
+JARVIS_KISISEL_HAFIZA_AKTARIM_TALIMATI.md
+personal_vault*.json
+*memory*.db
+*memory*.db-wal
+*memory*.db-shm

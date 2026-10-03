@@ -29,8 +29,9 @@ class DeduplicationEngine:
         subject: str | None = None,
         predicate: str | None = None,
         structured: dict[str, Any] | None = None,
+        hmac_key: bytes | None = None,
     ) -> str:
-        """Generate a deterministic SHA-256 fingerprint for a memory item.
+        """Generate a deterministic SHA-256 or HMAC-SHA256 fingerprint for a memory item.
         
         Args:
             kind: MemoryKind value string.
@@ -38,9 +39,10 @@ class DeduplicationEngine:
             subject: Optional subject entity.
             predicate: Optional predicate / property.
             structured: Optional structured key-value payload.
+            hmac_key: Optional 32-byte key for HMAC-SHA256 (mandatory for PRIVATE records).
             
         Returns:
-            64-character hexadecimal SHA-256 string.
+            64-character hexadecimal string.
         """
         norm_kind = kind.lower().strip()
         norm_subj = cls.normalize_text(subject or "")
@@ -54,7 +56,13 @@ class DeduplicationEngine:
             canonical_struct = ""
 
         raw_key = f"{norm_kind}|{norm_subj}|{norm_pred}|{norm_content}|{canonical_struct}"
-        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        raw_bytes = raw_key.encode("utf-8")
+
+        if hmac_key:
+            import hmac
+            return hmac.new(hmac_key, raw_bytes, hashlib.sha256).hexdigest()
+
+        return hashlib.sha256(raw_bytes).hexdigest()
 
     @classmethod
     def find_contradictions(

@@ -91,13 +91,25 @@ class MemoryEncryptor:
     """Handles AES-256-GCM client-side encryption and decryption."""
 
     @staticmethod
-    def encrypt(plaintext: str, key: bytes, key_version: int = 1) -> dict[str, Any]:
+    def derive_fingerprint_key(key: bytes) -> bytes:
+        """Derive an HMAC key from the master memory key for private fingerprinting."""
+        import hashlib
+        return hashlib.sha256(key + b":jarvis_memory_fingerprint_salt").digest()
+
+    @staticmethod
+    def encrypt(
+        plaintext: str,
+        key: bytes,
+        key_version: int = 1,
+        associated_data: bytes | None = None,
+    ) -> dict[str, Any]:
         """Encrypt plaintext into AES-256-GCM ciphertext with random 96-bit nonce.
         
         Args:
             plaintext: Cleartext string to encrypt.
             key: 32-byte AES key.
             key_version: Incremental version integer.
+            associated_data: Optional AAD bytes (e.g. record_id:schema_version) bound to ciphertext.
             
         Returns:
             Dictionary with ciphertext, nonce, algorithm, and key_version.
@@ -109,29 +121,29 @@ class MemoryEncryptor:
             aesgcm = AESGCM(key)
             nonce = os.urandom(12)  # 96 bits recommended for GCM
             data_bytes = plaintext.encode("utf-8")
-            ciphertext_bytes = aesgcm.encrypt(nonce, data_bytes, None)
+            ciphertext_bytes = aesgcm.encrypt(nonce, data_bytes, associated_data)
 
-            return {
+            payload = {
                 "ciphertext": base64.b64encode(ciphertext_bytes).decode("ascii"),
                 "nonce": base64.b64encode(nonce).decode("ascii"),
                 "algorithm": "AES-256-GCM",
                 "key_version": key_version,
             }
+            if associated_data is not None:
+                payload["aad_bound"] = True
+            return payload
         except Exception as exc:
             logger.error("encryption_failed", error=str(exc))
             raise CryptoError(f"Encryption failed: {exc}") from exc
 
-    @staticmethod
-    def decrypt(encrypted_payload: dict[str, Any] | str, key: bytes) -> str:
-        """Decrypt AES-256-GCM payload.
-        
-        Args:
-            encrypted_payload: Dict or JSON string containing ciphertext, nonce, and algorithm.
-            key: 32-byte AES key.
-            
-        Returns:
-            Decrypted plaintext string.
-        """
+    @classmethod
+    def decrypt_raw(
+        cls,
+        encrypted_payload: dict[str, Any] | str,
+        key: bytes,
+        associated_data: bytes | None = None,
+    ) -> str:
+        """Decrypt AES-256-GCM payload and return raw decrypted string."""
         if len(key) != 32:
             raise CryptoError(f"Invalid key length: expected 32 bytes, got {len(key)}")
 
@@ -147,9 +159,79 @@ class MemoryEncryptor:
             ciphertext = base64.b64decode(payload["ciphertext"].encode("ascii"))
             nonce = base64.b64decode(payload["nonce"].encode("ascii"))
             aesgcm = AESGCM(key)
-            decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, None)
+
+            # Determine AAD: if not explicitly provided, derive from bound payload metadata if available
+            aad_to_try = associated_data
+            if aad_to_try is None and payload.get("aad_bound") and payload.get("record_id"):
+                rec_id = payload["record_id"]
+                sch_ver = payload.get("schema_version", 1)
+                aad_to_try = f"{rec_id}:{sch_ver}".encode("utf-8")
+
+            # Try decrypting with aad_to_try first
+            decrypted_bytes: bytes
+            try:
+                decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, aad_to_try)
+            except Exception:
+                # Fallback to None if not aad_bound or if trying with aad failed
+                if aad_to_try is not None:
+                    decrypted_bytes = aesgcm.decrypt(nonce, ciphertext, None)
+                else:
+                    raise
+
             return decrypted_bytes.decode("utf-8")
         except Exception as exc:
-            # Avoid logging raw payload
             logger.error("decryption_failed", error=str(exc))
             raise CryptoError(f"Decryption failed or invalid key/tag: {exc}") from exc
+
+    @classmethod
+    def decrypt(
+        cls,
+        encrypted_payload: dict[str, Any] | str,
+        key: bytes,
+        associated_data: bytes | None = None,
+    ) -> str:
+        """Decrypt AES-256-GCM payload. If unified private payload, unwrap content string."""
+        raw_str = cls.decrypt_raw(encrypted_payload, key, associated_data=associated_data)
+        try:
+            parsed = json.loads(raw_str)
+            if isinstance(parsed, dict) and "content" in parsed and "structured" in parsed:
+                return parsed["content"] or ""
+        except Exception:
+            pass
+        return raw_str
+
+    @classmethod
+    def encrypt_private_payload(
+        cls,
+        data: dict[str, Any],
+        key: bytes,
+        record_id: Any,
+        schema_version: int = 1,
+    ) -> dict[str, Any]:
+        """Encrypt all sensitive attributes into a single unified AES-256-GCM payload."""
+        plaintext = json.dumps(data, ensure_ascii=False)
+        aad = f"{record_id}:{schema_version}".encode("utf-8") if record_id else None
+        res = cls.encrypt(plaintext, key, key_version=1, associated_data=aad)
+        if record_id:
+            res["record_id"] = str(record_id)
+        res["schema_version"] = schema_version
+        return res
+
+    @classmethod
+    def decrypt_private_payload(
+        cls,
+        encrypted_payload: dict[str, Any] | str,
+        key: bytes,
+        record_id: Any = None,
+        schema_version: int = 1,
+    ) -> dict[str, Any]:
+        """Decrypt unified payload and return structured data dictionary."""
+        aad = f"{record_id}:{schema_version}".encode("utf-8") if record_id else None
+        raw_str = cls.decrypt_raw(encrypted_payload, key, associated_data=aad)
+        try:
+            parsed = json.loads(raw_str)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"content": str(parsed)}
+        except Exception:
+            return {"content": raw_str}
