@@ -26,8 +26,11 @@ public struct CalendarScheduleView: View {
                                     .cornerRadius(6)
                             }
                         }
+                    } else if viewModel.isLoading {
+                        ProgressView("Takvim bilgisi sorgulanıyor...")
                     } else {
-                        Text("Yazılabilir takvim aranıyor...")
+                        Text("Kullanılabilir takvim bulunamadı veya bağlantı bekleniyor.")
+                            .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
                 }
@@ -37,52 +40,65 @@ public struct CalendarScheduleView: View {
                         .datePickerStyle(.graphical)
                 }
 
-                Section(header: Text("Planlanan Çalışma Blokları ve Etkinlikler")) {
-                    VStack(alignment: .leading, spacing: 10) {
+                Section(header: Text("Planlanan Etkinlikler ve Bloklar")) {
+                    if viewModel.isLoading {
                         HStack {
-                            Rectangle()
-                                .fill(Color.indigo)
-                                .frame(width: 4)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Çalışma Bloğu: YBS Vize Hazırlığı")
-                                    .font(.headline)
-                                Text("19:00 - 21:00 (120 dk)")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                Text("Kriter: Akşam odaklanma tercihi (Hafıza tabanlı)")
-                                    .font(.caption2)
-                                    .foregroundColor(.indigo)
-                            }
                             Spacer()
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundColor(.green)
-                        }
-                        .padding(.vertical, 4)
-
-                        Divider()
-
-                        HStack {
-                            Rectangle()
-                                .fill(Color.orange)
-                                .frame(width: 4)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Hatırlatıcı: Ders Kaydı Onayı")
-                                    .font(.headline)
-                                Text("Son Tarih: 23:59")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                            }
+                            ProgressView("Etkinlikler yükleniyor...")
                             Spacer()
-                            Image(systemName: "bell.fill")
-                                .foregroundColor(.orange)
                         }
-                        .padding(.vertical, 4)
+                        .padding(.vertical, 12)
+                    } else if viewModel.events.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "calendar.badge.clock")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary)
+                            Text("Seçilen tarihte takvim etkinliği veya planlanmış çalışma bloğu bulunmuyor.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    } else {
+                        ForEach(viewModel.events) { evt in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Rectangle()
+                                        .fill(Color.blue)
+                                        .frame(width: 4)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(evt.title)
+                                            .font(.headline)
+                                        Text("\(evt.start) - \(evt.end)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        if let notes = evt.notes, !notes.isEmpty {
+                                            Text(notes)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(2)
+                                        }
+                                    }
+                                    Spacer()
+                                    if evt.all_day {
+                                        Text("Tam Gün")
+                                            .font(.caption2)
+                                            .padding(4)
+                                            .background(Color(.tertiarySystemFill))
+                                            .cornerRadius(4)
+                                    }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
                     }
                 }
             }
             .navigationTitle("Takvim & Plan")
             .refreshable {
                 await viewModel.loadCalendars()
+                await viewModel.loadEvents(for: viewModel.selectedDate)
             }
         }
     }

@@ -14,8 +14,15 @@ logger = get_logger("jarvis.build_manager.device_monitor")
 class DeviceMonitor:
     """Discovers and monitors connected iOS devices via official Xcode devicectl."""
 
-    def __init__(self, default_target_name: str = "Fatih") -> None:
+    def __init__(
+        self,
+        default_target_name: str = "Fatih",
+        approved_identifier: str = "A06A0EAC-8F32-5BD1-A945-ED1C002C60D8",
+        approved_udid: str = "00008110-00182C4A2EDB601E",
+    ) -> None:
         self.default_target_name = default_target_name
+        self.approved_identifier = approved_identifier
+        self.approved_udid = approved_udid
 
     async def list_devices(self) -> list[DeviceInfo]:
         """Query xcrun devicectl list devices with JSON output."""
@@ -92,11 +99,55 @@ class DeviceMonitor:
                 except OSError:
                     pass
 
-    async def get_target_device(self, target_name: str | None = None) -> DeviceInfo | None:
-        """Find the designated target device by name, identifier, or UDID."""
+    async def get_target_device(
+        self,
+        target_name: str | None = None,
+        target_identifier: str | None = None,
+        target_udid: str | None = None,
+    ) -> DeviceInfo | None:
+        """
+        Find designated target device.
+        Requires exact match against approved device identifier/UDID to prevent
+        selection based solely on potentially duplicated display names.
+        """
+        req_id = target_identifier or self.approved_identifier
+        req_udid = target_udid or self.approved_udid
         target = target_name or self.default_target_name
+
         devices = await self.list_devices()
+
+        # 1. First priority: match exact CoreDevice identifier or hardware UDID
         for dev in devices:
-            if dev.name.lower() == target.lower() or dev.identifier == target or dev.udid == target:
+            if req_id and dev.identifier.upper() == req_id.upper():
                 return dev
+            if req_udid and dev.udid.upper() == req_udid.upper():
+                return dev
+
+        # 2. Second priority: match target parameter if it's an ID
+        if target:
+            for dev in devices:
+                if dev.identifier.lower() == target.lower() or dev.udid.lower() == target.lower():
+                    if req_id and dev.identifier.upper() != req_id.upper():
+                        logger.warning(
+                            "device_identifier_mismatch_rejected",
+                            found_id=dev.identifier,
+                            expected_id=req_id,
+                        )
+                        continue
+                    return dev
+
+        # 3. Third priority: match by display name, but STRICTLY verify against approved identifier
+        if target:
+            for dev in devices:
+                if dev.name.lower() == target.lower():
+                    if req_id and dev.identifier.upper() != req_id.upper():
+                        logger.warning(
+                            "device_name_matched_but_identifier_unapproved",
+                            device_name=dev.name,
+                            device_id=dev.identifier,
+                            approved_id=req_id,
+                        )
+                        continue
+                    return dev
+
         return None

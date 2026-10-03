@@ -1,28 +1,20 @@
 import Foundation
 
-public final class JarvisAPIService: @unchecked Sendable {
+public final class JarvisAPIService {
     public static let shared = JarvisAPIService()
 
-    private var baseURLString: String {
-        UserDefaults.standard.string(forKey: "jarvis_server_url") ?? "http://127.0.0.1:8765"
-    }
+    private let session = URLSession.shared
+    private let queueService = FirebaseCommandQueueService.shared
 
-    private var apiKey: String {
-        UserDefaults.standard.string(forKey: "jarvis_api_key") ?? ""
+    private var baseURLString: String {
+        return UserDefaults.standard.string(forKey: "jarvis_server_url") ?? "http://localhost:8765"
     }
 
     private init() {}
 
-    private var session: URLSession {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 15.0
-        config.timeoutIntervalForResource = 30.0
-        return URLSession(configuration: config)
-    }
-
-    // MARK: - Chat / Agent Commands
+    // MARK: - Direct Chat API (Local Mac Fallback / Dev Proxy)
     public func sendChatMessage(prompt: String) async throws -> String {
-        guard let url = URL(string: "\(baseURLString)/api/v1/chat") else {
+        guard let url = URL(string: "\(baseURLString)/v1/chat") else {
             throw URLError(.badURL)
         }
 
@@ -37,28 +29,55 @@ public final class JarvisAPIService: @unchecked Sendable {
             throw NSError(domain: "JarvisAPI", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to send message to Jarvis."])
         }
 
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let reply = json["response"] as? String {
-            return reply
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // Python API exposes {run_id: ..., status: ..., message: ..., approval: ...}
+            if let reply = json["message"] as? String {
+                return reply
+            } else if let reply = json["response"] as? String {
+                return reply
+            }
         }
 
-        return "Yanıt alındı."
+        return "Yanıt işlendi."
+    }
+
+    // MARK: - Email Summaries
+    public func fetchEmails() async throws -> [iOSEmailItemDTO] {
+        guard let url = URL(string: "\(baseURLString)/v1/emails/summaries") else {
+            throw URLError(.badURL)
+        }
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
+                return []
+            }
+            return (try? JSONDecoder().decode([iOSEmailItemDTO].self, from: data)) ?? []
+        } catch {
+            return []
+        }
     }
 
     // MARK: - Task Proposals & Actions
     public func fetchProposals(status: String? = nil) async throws -> [TaskProposalDTO] {
-        var urlString = "\(baseURLString)/api/v1/tasks/proposals"
+        var urlString = "\(baseURLString)/v1/tasks/proposals"
         if let s = status {
             urlString += "?status=\(s)"
         }
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
 
-        let (data, _) = try await session.data(from: url)
-        return try JSONDecoder().decode([TaskProposalDTO].self, from: data)
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
+                return []
+            }
+            return try JSONDecoder().decode([TaskProposalDTO].self, from: data)
+        } catch {
+            return []
+        }
     }
 
     public func fetchProposalDetail(taskId: String) async throws -> TaskProposalDetailDTO {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/proposals/\(taskId)") else {
+        guard let url = URL(string: "\(baseURLString)/v1/tasks/proposals/\(taskId)") else {
             throw URLError(.badURL)
         }
         let (data, _) = try await session.data(from: url)
@@ -66,7 +85,7 @@ public final class JarvisAPIService: @unchecked Sendable {
     }
 
     public func requestApproval(actionId: String) async throws -> [String: Any] {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/actions/\(actionId)/request-approval") else {
+        guard let url = URL(string: "\(baseURLString)/v1/tasks/actions/\(actionId)/request-approval") else {
             throw URLError(.badURL)
         }
         var req = URLRequest(url: url)
@@ -76,7 +95,7 @@ public final class JarvisAPIService: @unchecked Sendable {
     }
 
     public func approveAction(actionId: String) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/actions/\(actionId)/approve") else {
+        guard let url = URL(string: "\(baseURLString)/v1/tasks/actions/\(actionId)/approve") else {
             throw URLError(.badURL)
         }
         var req = URLRequest(url: url)
@@ -86,7 +105,7 @@ public final class JarvisAPIService: @unchecked Sendable {
     }
 
     public func dismissAction(actionId: String) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/actions/\(actionId)/dismiss") else {
+        guard let url = URL(string: "\(baseURLString)/v1/tasks/actions/\(actionId)/dismiss") else {
             throw URLError(.badURL)
         }
         var req = URLRequest(url: url)
@@ -96,7 +115,7 @@ public final class JarvisAPIService: @unchecked Sendable {
     }
 
     public func planReminder(taskId: String, due: String? = nil) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/proposals/\(taskId)/plan-reminder") else {
+        guard let url = URL(string: "\(baseURLString)/v1/tasks/proposals/\(taskId)/plan-reminder") else {
             throw URLError(.badURL)
         }
         var req = URLRequest(url: url)
@@ -110,7 +129,7 @@ public final class JarvisAPIService: @unchecked Sendable {
     }
 
     public func planWorkBlock(taskId: String, duration: Int = 120) async throws -> TaskActionDTO {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/proposals/\(taskId)/plan-work-block") else {
+        guard let url = URL(string: "\(baseURLString)/v1/tasks/proposals/\(taskId)/plan-work-block") else {
             throw URLError(.badURL)
         }
         var req = URLRequest(url: url)
@@ -120,24 +139,44 @@ public final class JarvisAPIService: @unchecked Sendable {
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await session.data(for: req)
-        struct Wrapper: Codable {
-            let action: TaskActionDTO
-        }
-        let wrapped = try JSONDecoder().decode(Wrapper.self, from: data)
-        return wrapped.action
+        return try JSONDecoder().decode(TaskActionDTO.self, from: data)
     }
 
-    // MARK: - Calendars & Health
+    // MARK: - Calendar & System
     public func fetchCalendars() async throws -> [iOSCalendarInfoDTO] {
-        guard let url = URL(string: "\(baseURLString)/api/v1/tasks/calendars") else {
+        guard let url = URL(string: "\(baseURLString)/v1/calendar/calendars") else {
             throw URLError(.badURL)
         }
-        let (data, _) = try await session.data(from: url)
-        struct Wrapper: Codable {
-            let calendars: [iOSCalendarInfoDTO]
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
+                return []
+            }
+            return try JSONDecoder().decode([iOSCalendarInfoDTO].self, from: data)
+        } catch {
+            return []
         }
-        let res = try JSONDecoder().decode(Wrapper.self, from: data)
-        return res.calendars
+    }
+
+    public func fetchEvents(calendarId: String?, start: Date, end: Date) async throws -> [iOSCalendarEventDTO] {
+        let formatter = ISO8601DateFormatter()
+        let sStr = formatter.string(from: start)
+        let eStr = formatter.string(from: end)
+        var urlString = "\(baseURLString)/v1/calendar/events?start=\(sStr)&end=\(eStr)"
+        if let cal = calendarId {
+            urlString += "&calendar_id=\(cal)"
+        }
+        guard let url = URL(string: urlString) else { throw URLError(.badURL) }
+
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let httpRes = response as? HTTPURLResponse, (200...299).contains(httpRes.statusCode) else {
+                return []
+            }
+            return try JSONDecoder().decode([iOSCalendarEventDTO].self, from: data)
+        } catch {
+            return []
+        }
     }
 
     public func checkHealth() async throws -> [String: Any] {

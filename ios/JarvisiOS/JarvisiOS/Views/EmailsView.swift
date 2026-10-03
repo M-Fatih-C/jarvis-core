@@ -32,54 +32,74 @@ public struct EmailsView: View {
                 }
 
                 Section(header: Text("Önemli E-posta Analizleri (Qwen AI)")) {
-                    VStack(alignment: .leading, spacing: 8) {
+                    if viewModel.isLoading {
                         HStack {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 8, height: 8)
-                            Text("Öğrenci İşleri Dairesi")
-                                .font(.headline)
                             Spacer()
-                            Text("10:15")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+                            ProgressView("E-posta analizleri sorgulanıyor...")
+                            Spacer()
                         }
+                        .padding(.vertical, 12)
+                    } else if viewModel.filteredEmails.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "tray")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary)
+                            Text("İncelenmiş e-posta bulunmuyor veya sunucu bağlantısı bekleniyor.")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    } else {
+                        ForEach(viewModel.filteredEmails) { item in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Circle()
+                                        .fill(item.is_important ? Color.red : Color.gray)
+                                        .frame(width: 8, height: 8)
+                                    Text(item.sender)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text(item.received_at)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
 
-                        Text("Ders Kayıtları ve Harç Ödemeleri Hakkında")
-                            .font(.subheadline)
-                            .bold()
+                                Text(item.subject)
+                                    .font(.subheadline)
+                                    .bold()
 
-                        Text("2026-2027 Güz dönemi ders kayıtlarının 8 Ekim'e kadar tamamlanması gerektiği bildirildi.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                                Text(item.summary)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(3)
 
-                        HStack {
-                            Label("Eğitim", systemImage: "graduationcap.fill")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.blue.opacity(0.1))
-                                .cornerRadius(4)
+                                HStack {
+                                    Label(item.category ?? "Genel", systemImage: "tag.fill")
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.blue.opacity(0.1))
+                                        .cornerRadius(6)
 
-                            Label("Yüksek Öncelik", systemImage: "exclamationmark.circle.fill")
-                                .font(.caption2)
-                                .foregroundColor(.red)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.red.opacity(0.1))
-                                .cornerRadius(4)
-
-                            Spacer()
-
-                            Text("Görev Çıkarıldı")
-                                .font(.caption2)
-                                .foregroundColor(.green)
+                                    if item.has_actionable_task {
+                                        Label("Görev Çıkarıldı", systemImage: "calendar.badge.plus")
+                                            .font(.caption2)
+                                            .foregroundColor(.green)
+                                    }
+                                }
+                                .padding(.top, 2)
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
-                    .padding(.vertical, 4)
                 }
             }
             .navigationTitle("E-posta Analizi")
+            .refreshable {
+                await viewModel.loadEmails()
+            }
         }
     }
 }
@@ -92,8 +112,7 @@ struct CategoryChip: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.caption)
-                .bold()
+                .font(.caption.bold())
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(isSelected ? Color.blue : Color(.secondarySystemBackground))

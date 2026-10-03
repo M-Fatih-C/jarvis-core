@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from typing import Any
@@ -24,6 +25,54 @@ from core.logging.setup import get_logger
 logger = get_logger("jarvis.build_manager.manager")
 
 
+class CrossProcessLock:
+    """
+    File-based cross-process mutex using fcntl.flock.
+    Prevents concurrent build and installation operations across separate CLI,
+    daemon, and agent processes.
+    """
+
+    def __init__(self, lock_file: str = "/tmp/jarvis_ios_build.lock") -> None:
+        self.lock_file = lock_file
+        self._fd: Any = None
+
+    def acquire(self, blocking: bool = False) -> bool:
+        """Acquire non-blocking or blocking exclusive file lock."""
+        try:
+            self._fd = open(self.lock_file, "w")
+            flags = fcntl.LOCK_EX
+            if not blocking:
+                flags |= fcntl.LOCK_NB
+            fcntl.flock(self._fd, flags)
+            return True
+        except (BlockingIOError, OSError):
+            if self._fd is not None:
+                try:
+                    self._fd.close()
+                except OSError:
+                    pass
+                self._fd = None
+            return False
+
+    def release(self) -> None:
+        """Release lock and close descriptor."""
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+                self._fd.close()
+            except OSError:
+                pass
+            self._fd = None
+
+    def __enter__(self) -> "CrossProcessLock":
+        if not self.acquire(blocking=False):
+            raise BlockingIOError("Another process currently holds the iOS build/install lock.")
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.release()
+
+
 class BuildManager:
     """Manages iOS application compilation, provisioning expiration tracking, and installation."""
 
@@ -31,21 +80,30 @@ class BuildManager:
         self,
         project_dir: str = "ios/JarvisiOS",
         target_device_name: str = "Fatih",
+        target_device_id: str = "A06A0EAC-8F32-5BD1-A945-ED1C002C60D8",
+        target_device_udid: str = "00008110-00182C4A2EDB601E",
         target_bundle_id: str = "com.mfatihc.jarvis",
         state_file: str | None = None,
     ) -> None:
         self.target_device_name = target_device_name
+        self.target_device_id = target_device_id
+        self.target_device_udid = target_device_udid
         self.target_bundle_id = target_bundle_id
         self.state_file = os.path.abspath(
             state_file or os.path.expanduser("~/.cache/jarvis/build_manager_state.json")
         )
-        self.device_monitor = DeviceMonitor(default_target_name=target_device_name)
+        self.device_monitor = DeviceMonitor(
+            default_target_name=target_device_name,
+            approved_identifier=target_device_id,
+            approved_udid=target_device_udid,
+        )
         self.builder = XcodeBuilder(project_dir=project_dir)
         self.installer = AppInstaller()
         self.signing_inspector = SigningInspector()
         self.notifier = BuildNotifier()
 
         self._lock = asyncio.Lock()
+        self._cross_lock = CrossProcessLock()
         self.state = self._load_state()
 
     def _load_state(self) -> BuildManagerState:
@@ -59,6 +117,8 @@ class BuildManager:
                 logger.warning("failed_loading_build_manager_state", error=str(exc))
         return BuildManagerState(
             target_device_name=self.target_device_name,
+            target_device_id=self.target_device_id,
+            target_device_udid=self.target_device_udid,
             target_bundle_id=self.target_bundle_id,
         )
 
@@ -73,12 +133,14 @@ class BuildManager:
 
     async def get_status(self) -> dict[str, Any]:
         """Return the complete current status of the build manager, device, and provisioning."""
-        # Query target device status
-        dev = await self.device_monitor.get_target_device(self.state.target_device_name)
+        dev = await self.device_monitor.get_target_device(
+            target_name=self.state.target_device_name,
+            target_identifier=self.state.target_device_id,
+            target_udid=self.state.target_device_udid,
+        )
         self.state.last_device_info = dev
         self.state.last_checked_at = datetime.now(timezone.utc)
 
-        # Check existing provisioning if artifact exists
         prov_info: ProvisioningInfo | None = None
         if self.state.last_build_result and self.state.last_build_result.artifact:
             app_path = self.state.last_build_result.artifact.app_path
@@ -98,15 +160,22 @@ class BuildManager:
             ),
             "last_build": self.state.last_build_result.model_dump(mode="json") if self.state.last_build_result else None,
             "last_install": self.state.last_install_result.model_dump(mode="json") if self.state.last_install_result else None,
+            "last_successful_renewal": self.state.last_successful_renewal.isoformat() if self.state.last_successful_renewal else None,
+            "renewal_retry_count": self.state.renewal_retry_count,
             "auto_renew_enabled": self.state.auto_renew_enabled,
             "target_device_name": self.state.target_device_name,
+            "target_device_id": self.state.target_device_id,
             "target_bundle_id": self.state.target_bundle_id,
             "last_checked_at": self.state.last_checked_at.isoformat() if self.state.last_checked_at else None,
         }
 
     async def check_device(self) -> DeviceInfo | None:
-        """Probe for the target iPhone."""
-        dev = await self.device_monitor.get_target_device(self.state.target_device_name)
+        """Probe for the target iPhone matching approved identifier."""
+        dev = await self.device_monitor.get_target_device(
+            target_name=self.state.target_device_name,
+            target_identifier=self.state.target_device_id,
+            target_udid=self.state.target_device_udid,
+        )
         self.state.last_device_info = dev
         self._save_state()
         if not dev or not dev.reachable:
@@ -120,116 +189,194 @@ class BuildManager:
         clean_first: bool = False,
         code_signing_allowed: bool = True,
     ) -> BuildResult:
-        """Acquire lock and build the iOS app using Xcode."""
+        """Acquire in-process and cross-process locks, then build the iOS app."""
         if self._lock.locked():
             return BuildResult(
                 success=False,
-                error="Another build or installation is already in progress.",
+                error="Another build or installation is already in progress (in-process lock held).",
                 duration_seconds=0.0
             )
 
-        async with self._lock:
-            self.state.status = BuildLifecycleState.BUILDING
-            self._save_state()
-
-            # Target connected device if available, otherwise generic iOS
-            dev = await self.device_monitor.get_target_device(self.state.target_device_name)
-            destination = f"id={dev.udid}" if dev and dev.udid else "generic/platform=iOS"
-
-            build_res = await self.builder.build(
-                device_destination=destination,
-                allow_provisioning_updates=allow_provisioning_updates,
-                configuration=configuration,
-                clean_first=clean_first,
-                code_signing_allowed=code_signing_allowed,
+        try:
+            self._cross_lock.acquire(blocking=False)
+        except Exception:
+            return BuildResult(
+                success=False,
+                error="Another build or installation is already in progress (cross-process lock held).",
+                duration_seconds=0.0
             )
 
-            self.state.last_build_result = build_res
+        try:
+            async with self._lock:
+                self.state.status = BuildLifecycleState.BUILDING
+                self._save_state()
 
-            if build_res.success:
-                self.state.status = BuildLifecycleState.SUCCESS
-                if build_res.artifact:
-                    prof_path = os.path.join(build_res.artifact.app_path, "embedded.mobileprovision")
-                    if os.path.exists(prof_path):
-                        self.state.last_provisioning_info = await self.signing_inspector.parse_provisioning_profile(prof_path)
-                await self.notifier.notify(NotificationEvent.BUILD_SUCCEEDED)
-            else:
-                if build_res.requires_user_action:
-                    self.state.status = BuildLifecycleState.USER_ACTION_REQUIRED
-                    await self.notifier.notify(NotificationEvent.USER_ACTION_REQUIRED)
+                dev = await self.device_monitor.get_target_device(
+                    target_name=self.state.target_device_name,
+                    target_identifier=self.state.target_device_id,
+                    target_udid=self.state.target_device_udid,
+                )
+                destination = f"id={dev.udid}" if dev and dev.udid else "generic/platform=iOS"
+
+                build_res = await self.builder.build(
+                    device_destination=destination,
+                    allow_provisioning_updates=allow_provisioning_updates,
+                    configuration=configuration,
+                    clean_first=clean_first,
+                    code_signing_allowed=code_signing_allowed,
+                )
+
+                self.state.last_build_result = build_res
+
+                if build_res.success:
+                    self.state.status = BuildLifecycleState.SUCCESS
+                    if build_res.artifact:
+                        prof_path = os.path.join(build_res.artifact.app_path, "embedded.mobileprovision")
+                        if os.path.exists(prof_path):
+                            self.state.last_provisioning_info = (
+                                await self.signing_inspector.parse_provisioning_profile(prof_path)
+                            )
+                    await self.notifier.notify(NotificationEvent.BUILD_SUCCEEDED)
                 else:
-                    self.state.status = BuildLifecycleState.FAILED
-                    await self.notifier.notify(NotificationEvent.BUILD_FAILED, detail=build_res.error)
+                    if build_res.requires_user_action:
+                        self.state.status = BuildLifecycleState.USER_ACTION_REQUIRED
+                        await self.notifier.notify(NotificationEvent.USER_ACTION_REQUIRED)
+                    else:
+                        self.state.status = BuildLifecycleState.FAILED
+                        await self.notifier.notify(NotificationEvent.BUILD_FAILED, detail=build_res.error)
 
-            self._save_state()
-            return build_res
+                self._save_state()
+                return build_res
+        finally:
+            self._cross_lock.release()
 
     async def install(self) -> InstallResult:
-        """Acquire lock and install the latest built artifact onto the target device."""
+        """
+        Acquire locks, verify artifact integrity (bundle ID, signature, provisioning),
+        install on approved device, and verify via devicectl.
+        """
         if self._lock.locked():
             return InstallResult(
                 success=False,
                 device_id="",
                 bundle_id=self.state.target_bundle_id,
-                error="Another operation is currently active."
+                error="Another operation is currently active (in-process lock held)."
             )
 
-        async with self._lock:
-            # Verify target device is reachable
-            dev = await self.device_monitor.get_target_device(self.state.target_device_name)
-            if not dev or not dev.reachable:
-                self.state.status = BuildLifecycleState.DEVICE_UNAVAILABLE
+        try:
+            self._cross_lock.acquire(blocking=False)
+        except Exception:
+            return InstallResult(
+                success=False,
+                device_id="",
+                bundle_id=self.state.target_bundle_id,
+                error="Another operation is currently active (cross-process lock held)."
+            )
+
+        try:
+            async with self._lock:
+                dev = await self.device_monitor.get_target_device(
+                    target_name=self.state.target_device_name,
+                    target_identifier=self.state.target_device_id,
+                    target_udid=self.state.target_device_udid,
+                )
+                if not dev or not dev.reachable:
+                    self.state.status = BuildLifecycleState.DEVICE_UNAVAILABLE
+                    self._save_state()
+                    await self.notifier.notify(NotificationEvent.DEVICE_UNAVAILABLE)
+                    return InstallResult(
+                        success=False,
+                        device_id=dev.identifier if dev else "unknown",
+                        bundle_id=self.state.target_bundle_id,
+                        error=f"Approved device '{self.state.target_device_id}' is not reachable via wired or wireless Xcode connection."
+                    )
+
+                if not self.state.last_build_result or not self.state.last_build_result.artifact:
+                    return InstallResult(
+                        success=False,
+                        device_id=dev.identifier,
+                        bundle_id=self.state.target_bundle_id,
+                        error="No compiled build artifact available. Please run ios.build.build first."
+                    )
+
+                app_path = self.state.last_build_result.artifact.app_path
+
+                # Pre-installation artifact integrity check
+                valid_artifact, integrity_err = await self.signing_inspector.verify_artifact_integrity(
+                    app_path, self.state.target_bundle_id
+                )
+                if not valid_artifact:
+                    err_msg = f"Artifact pre-installation security verification failed: {integrity_err}"
+                    logger.error("install_aborted_artifact_verification_failed", error=err_msg)
+                    return InstallResult(
+                        success=False,
+                        device_id=dev.identifier,
+                        bundle_id=self.state.target_bundle_id,
+                        error=err_msg,
+                        verified=False
+                    )
+
+                self.state.status = BuildLifecycleState.INSTALLING
                 self._save_state()
-                await self.notifier.notify(NotificationEvent.DEVICE_UNAVAILABLE)
-                return InstallResult(
-                    success=False,
-                    device_id=dev.identifier if dev else "unknown",
-                    bundle_id=self.state.target_bundle_id,
-                    error=f"Device '{self.state.target_device_name}' is not reachable via wired or wireless Xcode connection."
+
+                install_res = await self.installer.install(
+                    device_identifier=dev.identifier,
+                    app_bundle_path=app_path,
+                    bundle_id=self.state.target_bundle_id
                 )
 
-            # Check if artifact exists
-            if not self.state.last_build_result or not self.state.last_build_result.artifact:
-                return InstallResult(
-                    success=False,
-                    device_id=dev.identifier,
-                    bundle_id=self.state.target_bundle_id,
-                    error="No compiled build artifact available. Please run ios.build.build first."
-                )
+                self.state.last_install_result = install_res
 
-            app_path = self.state.last_build_result.artifact.app_path
-            self.state.status = BuildLifecycleState.INSTALLING
-            self._save_state()
+                if install_res.success and install_res.verified:
+                    self.state.status = BuildLifecycleState.SUCCESS
+                    await self.notifier.notify(NotificationEvent.INSTALL_SUCCEEDED)
+                else:
+                    self.state.status = BuildLifecycleState.FAILED
+                    await self.notifier.notify(NotificationEvent.INSTALL_FAILED, detail=install_res.error)
 
-            install_res = await self.installer.install(
-                device_identifier=dev.identifier,
-                app_bundle_path=app_path,
-                bundle_id=self.state.target_bundle_id
-            )
+                self._save_state()
+                return install_res
+        finally:
+            self._cross_lock.release()
 
-            self.state.last_install_result = install_res
-
-            if install_res.success:
-                self.state.status = BuildLifecycleState.SUCCESS
-                await self.notifier.notify(NotificationEvent.INSTALL_SUCCEEDED)
-            else:
-                self.state.status = BuildLifecycleState.FAILED
-                await self.notifier.notify(NotificationEvent.INSTALL_FAILED, detail=install_res.error)
-
-            self._save_state()
-            return install_res
-
-    async def renew(self) -> dict[str, Any]:
-        """Trigger provisioning profile renewal via clean build with provisioning updates."""
+    async def renew(self, install_after: bool = False) -> dict[str, Any]:
+        """
+        Execute provisioning profile renewal:
+        1. Check bounded retries and cooldown.
+        2. Clean build with allow_provisioning_updates.
+        3. Verify expiration date advanced later than previous profile.
+        4. Optionally install onto target device and verify.
+        """
         logger.info("provisioning_renewal_triggered")
+        now = datetime.now(timezone.utc)
+
+        # Check cooldown & bounded retries
+        if self.state.last_renewal_attempt and self.state.renewal_retry_count >= self.state.renewal_max_retries:
+            elapsed = (now - self.state.last_renewal_attempt).total_seconds()
+            if elapsed < self.state.renewal_cooldown_seconds:
+                cooldown_left = int(self.state.renewal_cooldown_seconds - elapsed)
+                logger.warning("renewal_skipped_in_cooldown", cooldown_remaining_seconds=cooldown_left)
+                return {
+                    "success": False,
+                    "renewed": False,
+                    "cooldown": True,
+                    "error": f"Renewal is in cooldown (max {self.state.renewal_max_retries} retries reached). Cooldown expires in {cooldown_left}s.",
+                }
+
         old_exp_date: datetime | None = None
         if self.state.last_provisioning_info:
             old_exp_date = self.state.last_provisioning_info.expiration_date
 
         build_res = await self.build(allow_provisioning_updates=True, clean_first=True)
         if not build_res.success:
+            self.state.renewal_retry_count += 1
+            self.state.last_renewal_attempt = now
+            if build_res.requires_user_action:
+                self.state.status = BuildLifecycleState.USER_ACTION_REQUIRED
+            self._save_state()
             return {
                 "success": False,
+                "renewed": False,
                 "error": f"Renewal build failed: {build_res.error}",
                 "user_action_required": build_res.requires_user_action
             }
@@ -241,28 +388,68 @@ class BuildManager:
             if old_exp_date is None or new_prov.expiration_date > old_exp_date:
                 renewed = True
 
-        self.state.last_renewal_attempt = datetime.now(timezone.utc)
+        if not renewed:
+            self.state.renewal_retry_count += 1
+            self.state.last_renewal_attempt = now
+            self._save_state()
+            return {
+                "success": False,
+                "renewed": False,
+                "error": "Xcode returned the same provisioning profile; expiration date did not advance.",
+                "days_remaining": new_prov.days_remaining if new_prov else None,
+                "user_action_required": False,
+            }
+
+        if install_after:
+            install_res = await self.install()
+            if not install_res.success:
+                self.state.renewal_retry_count += 1
+                self.state.last_renewal_attempt = now
+                self._save_state()
+                return {
+                    "success": False,
+                    "renewed": False,
+                    "error": f"Renewal installation failed: {install_res.error}",
+                    "user_action_required": False,
+                }
+            self.state.last_successful_renewal = now
+            self.state.renewal_retry_count = 0
+
+        self.state.last_renewal_attempt = now
         self._save_state()
 
         return {
-            "success": build_res.success,
-            "renewed": renewed,
+            "success": True,
+            "renewed": True,
             "days_remaining": new_prov.days_remaining if new_prov else None,
             "expiration_date": new_prov.expiration_date.isoformat() if new_prov and new_prov.expiration_date else None,
-            "user_action_required": build_res.requires_user_action,
+            "user_action_required": False,
         }
 
     async def evaluate_auto_trigger(self) -> bool:
         """
         Evaluate auto-deploy condition:
-        Device reachable AND user opted in AND
-        (provisioning expiration approaching OR approved new build available OR explicit manual build requested)
+        Device reachable AND user opted in AND NOT in cooldown AND
+        provisioning expiration approaching.
+        Requires successful signed renewal build AND successful installation on device.
+        Only then records renewal as completed.
         """
         if not self.state.auto_renew_enabled:
             logger.info("auto_trigger_skipped_not_opted_in")
             return False
 
-        dev = await self.device_monitor.get_target_device(self.state.target_device_name)
+        # Cooldown guard against repeated 15-minute rebuild loops
+        if self.state.last_renewal_attempt and self.state.renewal_retry_count >= self.state.renewal_max_retries:
+            elapsed = (datetime.now(timezone.utc) - self.state.last_renewal_attempt).total_seconds()
+            if elapsed < self.state.renewal_cooldown_seconds:
+                logger.info("auto_trigger_skipped_cooldown_active", retries=self.state.renewal_retry_count)
+                return False
+
+        dev = await self.device_monitor.get_target_device(
+            target_name=self.state.target_device_name,
+            target_identifier=self.state.target_device_id,
+            target_udid=self.state.target_device_udid,
+        )
         if not dev or not dev.reachable:
             logger.info("auto_trigger_device_not_reachable")
             return False
@@ -275,10 +462,19 @@ class BuildManager:
             return False
 
         logger.info("auto_trigger_executing_renewal")
-        renew_res = await self.renew()
+        renew_res = await self.renew(install_after=False)
         if renew_res.get("success"):
-            await self.install()
-            return True
+            install_res = await self.install()
+            if install_res.success:
+                self.state.last_successful_renewal = datetime.now(timezone.utc)
+                self.state.renewal_retry_count = 0
+                self._save_state()
+                return True
+            else:
+                self.state.renewal_retry_count += 1
+                self.state.last_renewal_attempt = datetime.now(timezone.utc)
+                self._save_state()
+                return False
         return False
 
     def set_auto_renew(self, enabled: bool) -> bool:

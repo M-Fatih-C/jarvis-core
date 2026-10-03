@@ -26,6 +26,9 @@
 		1017 /* DeviceStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2017 /* DeviceStatusView.swift */; };
 		1018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2018 /* SettingsView.swift */; };
 		1019 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2019 /* MainTabView.swift */; };
+		1021 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2021 /* KeychainHelper.swift */; };
+		1022 /* FirebaseAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2022 /* FirebaseAuthService.swift */; };
+		1023 /* FirebaseCommandQueueService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2023 /* FirebaseCommandQueueService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,6 +53,9 @@
 		2018 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		2019 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		2020 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		2021 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		2022 /* FirebaseAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseAuthService.swift; sourceTree = "<group>"; };
+		2023 /* FirebaseCommandQueueService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirebaseCommandQueueService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -107,6 +113,9 @@
 			isa = PBXGroup;
 			children = (
 				2006 /* JarvisAPIService.swift */,
+				2021 /* KeychainHelper.swift */,
+				2022 /* FirebaseAuthService.swift */,
+				2023 /* FirebaseCommandQueueService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -227,6 +236,9 @@
 				1017 /* DeviceStatusView.swift in Sources */,
 				1018 /* SettingsView.swift in Sources */,
 				1019 /* MainTabView.swift in Sources */,
+				1021 /* KeychainHelper.swift in Sources */,
+				1022 /* FirebaseAuthService.swift in Sources */,
+				1023 /* FirebaseCommandQueueService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

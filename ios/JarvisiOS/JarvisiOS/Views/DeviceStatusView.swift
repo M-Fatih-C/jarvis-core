@@ -59,9 +59,15 @@ public struct DeviceStatusView: View {
                     HStack {
                         Text("Gecikme Süresi")
                         Spacer()
-                        Text("\(viewModel.latencyMs) ms")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        if let ms = viewModel.latencyMs {
+                            Text("\(ms) ms")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Ölçülemedi")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 

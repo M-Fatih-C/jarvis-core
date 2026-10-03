@@ -88,6 +88,9 @@ class InstallResult(BaseModel):
     error: str | None = None
     duration_seconds: float = 0.0
     device_locked: bool = False
+    verified: bool = False
+    installed_version: str | None = None
+    installed_bundle_id: str | None = None
 
 
 class BuildManagerState(BaseModel):
@@ -98,7 +101,13 @@ class BuildManagerState(BaseModel):
     last_build_result: BuildResult | None = None
     last_install_result: InstallResult | None = None
     last_renewal_attempt: datetime | None = None
+    last_successful_renewal: datetime | None = None
+    renewal_retry_count: int = 0
+    renewal_max_retries: int = 3
+    renewal_cooldown_seconds: int = 3600
     auto_renew_enabled: bool = False
     target_device_name: str = "Fatih"
+    target_device_id: str = "A06A0EAC-8F32-5BD1-A945-ED1C002C60D8"
+    target_device_udid: str = "00008110-00182C4A2EDB601E"
     target_bundle_id: str = "com.mfatihc.jarvis"
     last_checked_at: datetime | None = None

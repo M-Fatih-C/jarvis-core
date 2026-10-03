@@ -119,3 +119,72 @@ class SigningInspector:
             return proc.returncode == 0
         except Exception:
             return False
+
+    @classmethod
+    async def verify_artifact_integrity(
+        cls, app_bundle_path: str, expected_bundle_id: str
+    ) -> tuple[bool, str | None]:
+        """
+        Verify bundle identifier, signing identity, codesign validity,
+        and embedded provisioning profile before allowing device installation.
+        """
+        if not os.path.exists(app_bundle_path):
+            return False, f"App bundle not found at {app_bundle_path}"
+
+        # 1. Verify codesign validity
+        valid_sign = await cls.verify_codesign(app_bundle_path)
+        if not valid_sign:
+            return False, "Codesign verification failed (--verify --deep --strict failed)"
+
+        # 2. Extract signing details using codesign -dvvv
+        try:
+            cmd = ["codesign", "-dvvv", app_bundle_path]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            codesign_info = (
+                stderr.decode("utf-8", errors="replace") + "\n" +
+                stdout.decode("utf-8", errors="replace")
+            )
+
+            # Check bundle identifier
+            bundle_id_match = False
+            for line in codesign_info.splitlines():
+                if line.startswith("Identifier="):
+                    actual_id = line.split("=", 1)[1].strip()
+                    if actual_id == expected_bundle_id:
+                        bundle_id_match = True
+                    else:
+                        return False, f"Bundle ID mismatch: expected {expected_bundle_id}, got {actual_id}"
+
+            if not bundle_id_match:
+                return False, f"Could not verify Identifier={expected_bundle_id} from codesign metadata"
+
+            # Check signing identity exists
+            has_authority = any("Authority=" in line for line in codesign_info.splitlines())
+            if not has_authority:
+                return False, "No valid signing Authority found in code signature"
+
+        except Exception as exc:
+            return False, f"Error inspecting code signature: {exc}"
+
+        # 3. Check embedded provisioning profile
+        prof_path = os.path.join(app_bundle_path, "embedded.mobileprovision")
+        if not os.path.exists(prof_path):
+            return False, "Missing embedded.mobileprovision in app bundle"
+
+        prov_info = await cls.parse_provisioning_profile(prof_path)
+        if prov_info.error:
+            return False, f"Provisioning profile invalid: {prov_info.error}"
+
+        if prov_info.is_expired:
+            return False, f"Provisioning profile is expired (expired at {prov_info.expiration_date})"
+
+        # Check provisioning app identifier
+        if prov_info.app_identifier and not prov_info.app_identifier.endswith(expected_bundle_id):
+            return False, f"Provisioning profile app ID {prov_info.app_identifier} does not match {expected_bundle_id}"
+
+        return True, None

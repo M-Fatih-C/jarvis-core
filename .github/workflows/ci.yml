@@ -79,3 +79,23 @@ jobs:
           cd macos/JarvisMacAgent
           swift test -v
           swift build -c release
+
+  swift-ios-app:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run iOS Swift Unit Tests (Auth, Decoding, Lifecycle, Approval)
+        run: |
+          cd ios/JarvisiOSTests
+          swift test -v
+
+      - name: Build Jarvis iOS App (Generic Destination, Unsigned CI)
+        run: |
+          xcodebuild -project ios/JarvisiOS/JarvisiOS.xcodeproj \
+            -scheme JarvisiOS \
+            -destination "generic/platform=iOS" \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
