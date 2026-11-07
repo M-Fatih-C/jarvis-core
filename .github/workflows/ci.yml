@@ -69,7 +69,7 @@ jobs:
             ".venv/bin/python scripts/firebase_emulator_test.py --require-emulator"
 
   swift-macos-agent:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -81,7 +81,7 @@ jobs:
           swift build -c release
 
   swift-ios-app:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
